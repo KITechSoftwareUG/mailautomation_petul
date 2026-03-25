@@ -1,0 +1,28 @@
+{
+  "name": "mailautomation_petul",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.41",
+    "@supabase/supabase-js": "^2.99.2",
+    "ai": "^6.0.116",
+    "dotenv": "^17.3.1",
+    "imapflow": "^1.2.15",
+    "mailparser": "^3.9.4",
+    "pm2": "^6.0.14",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

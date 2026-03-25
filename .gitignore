@@ -1,0 +1,13 @@
+node_modules
+.env
+.env.local
+.env.production
+.next
+dist
+logs
+*.log
+.gemini
+.claude
+.github
+mcp.json
+package-lock.json

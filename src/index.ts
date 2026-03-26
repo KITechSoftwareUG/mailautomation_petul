@@ -12,6 +12,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
+import nodemailer from "nodemailer";
 import * as dotenv from "dotenv";
 import { processIntent } from "./agents/01_intentAgent";
 import { checkPolicy } from "./agents/02_policyAgent";
@@ -89,25 +90,25 @@ function extractThreadInfo(parsed: any): { in_reply_to: string | null; reference
 
 // -- main --
 
+const imapHost = process.env.IMAP_HOST;
+const imapUser = process.env.IMAP_USER;
+const imapPassword = process.env.IMAP_PASSWORD;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!imapHost || !imapUser || !imapPassword || !supabaseUrl || !supabaseKey) {
+    console.error("❌ Kritische Umgebungsvariablen fehlen in der .env!");
+    process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 async function startListener() {
-    const imapHost = process.env.IMAP_HOST;
-    const imapUser = process.env.IMAP_USER;
-    const imapPassword = process.env.IMAP_PASSWORD;
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!imapHost || !imapUser || !imapPassword || !supabaseUrl || !supabaseKey) {
-        console.error("❌ Kritische Umgebungsvariablen fehlen in der .env!");
-        process.exit(1);
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
     const client = new ImapFlow({
-        host: imapHost,
+        host: imapHost!,
         port: Number(process.env.IMAP_PORT ?? 993),
         secure: process.env.IMAP_SECURE !== "false",
-        auth: { user: imapUser, pass: imapPassword },
+        auth: { user: imapUser!, pass: imapPassword! },
         logger: false
     });
 
@@ -389,5 +390,61 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+// --- OUTBOUND LOOP: Send approved drafts ---
+const transporter = nodemailer.createTransport({
+    host: process.env.IMAP_HOST, // Kasserver uses same host for POP/IMAP/SMTP
+    port: 465,
+    secure: true,
+    auth: {
+        user: process.env.IMAP_USER,
+        pass: process.env.IMAP_PASSWORD,
+    },
+});
+
+async function processOutbound() {
+    try {
+        const { data: approvedMails, error } = await supabase
+            .from("emails")
+            .select("id, mail_id, betreff, draft_reply, senders!inner(email)")
+            .eq("status", "completed");
+
+        if (error) {
+            console.error("❌ Outbound DB Fehler (Status: completed):", error.message);
+            return;
+        }
+
+        if (approvedMails && approvedMails.length > 0) {
+            console.log(`📤 Outbound: ${approvedMails.length} freigegebene Mails gefunden.`);
+
+            for (const mail of approvedMails) {
+                try {
+                    console.log(`   -> Sende Antwort an ${mail.senders[0].email} ...`);
+
+                    await transporter.sendMail({
+                        from: `"Petulia AI Agent" <${process.env.IMAP_USER}>`,
+                        to: mail.senders[0].email,
+                        subject: `Re: ${mail.betreff}`,
+                        text: mail.draft_reply,
+                    });
+
+                    await supabase
+                        .from("emails")
+                        .update({ status: "sent" })
+                        .eq("id", mail.id);
+
+                    console.log(`      ✅ Erfolgreich gesendet & Status aktualisiert.`);
+                } catch (sendErr: any) {
+                    console.error(`      ❌ Fehler beim Senden an ${mail.senders[0].email}:`, sendErr.message);
+                }
+            }
+        }
+    } catch (err: any) {
+        console.error("❌ Outbound Loop Fehler:", err.message);
+    }
+}
+
+// Start watching for outbound approvals every 10 seconds
+setInterval(processOutbound, 10000);
 
 startListener().catch(console.error);

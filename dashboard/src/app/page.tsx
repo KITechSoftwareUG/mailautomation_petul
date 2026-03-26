@@ -13,6 +13,7 @@ export default async function DashboardPage() {
       thread_id,
       betreff, 
       body_text,
+      body_html,
       received_at, 
       status, 
       intent, 
@@ -24,7 +25,7 @@ export default async function DashboardPage() {
       senders!inner(email, name)
     `)
     .order("received_at", { ascending: false })
-    .limit(20);
+    .limit(50);
 
   if (error) {
     return (

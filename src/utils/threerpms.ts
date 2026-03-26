@@ -15,45 +15,55 @@ export const HOTELS = [
   { id: "H3", name: "Art Hotel Brunnen", keywords: ["brunnen"], key: process.env.THREE_RPMS_API_KEY_H3 },
   { id: "H4", name: "Aparthotel Residenz", keywords: ["residenz"], key: process.env.THREE_RPMS_API_KEY_H4 },
   { id: "H5", name: "Apart Hotel Am Ruhrbogen", keywords: ["ruhrbogen"], key: process.env.THREE_RPMS_API_KEY_H5 },
+  { id: "H6", name: "Hotel City", keywords: ["city"], key: process.env.THREE_RPMS_API_KEY_H6 },
+  { id: "H7", name: "Hotel Savoy", keywords: ["savoy"], key: process.env.THREE_RPMS_API_KEY_H7 },
+  { id: "H8", name: "Charming Hotel", keywords: ["charming"], key: process.env.THREE_RPMS_API_KEY_H8 },
 ];
 
 /**
  * Returns the best matching hotel object based on various identifiers.
  */
 export function identifyHotel(recipientEmail: string, forwardTarget: string = "", aiIdentifiedHotel: string | null = null) {
-  const searchString = (recipientEmail + " " + forwardTarget + " " + (aiIdentifiedHotel || "")).toLowerCase().trim();
+  // 1. Zuerst exakte KI-Identifikation priorisieren
+  if (aiIdentifiedHotel) {
+    const normalizedAi = aiIdentifiedHotel.toLowerCase();
+    const aiMatch = HOTELS.find(h =>
+      normalizedAi.includes(h.name.toLowerCase()) ||
+      h.keywords.some(kw => normalizedAi.includes(kw))
+    );
+    if (aiMatch) return aiMatch;
+  }
 
+  // 2. Fallback auf E-Mail Keywords
+  const searchString = (recipientEmail + " " + forwardTarget).toLowerCase().trim();
   for (const hotel of HOTELS) {
     if (hotel.keywords.some(kw => searchString.includes(kw))) {
       return hotel;
     }
   }
 
-  // Fallback to H1 (Zeche) if it's info@petul.de or nothing else matches
+  // DEFAULT: Fallback auf Zeche
   return HOTELS[0];
 }
 
 /**
- * Legacy wrapper for getApiKeyForHotel
+ * Wrapper for API Key
  */
 export function getApiKeyForHotel(recipientEmail: string, forwardTarget: string = "", aiIdentifiedHotel: string | null = null): string {
   return identifyHotel(recipientEmail, forwardTarget, aiIdentifiedHotel).key || "";
 }
 
 /**
- * Legacy wrapper for resolveHotelName
+ * Wrapper for Hotel Name
  */
 export function resolveHotelName(recipientEmail: string, forwardTarget: string = "", aiIdentifiedHotel: string | null = null): string {
   const hotel = identifyHotel(recipientEmail, forwardTarget, aiIdentifiedHotel);
-  // If we matched something definitive, return its name. 
-  // If it's just the fallback because nothing matched, we might still want to say "Unbekannt" 
-  // BUT the user wants to see what's happening.
-
   const searchString = (recipientEmail + " " + forwardTarget + " " + (aiIdentifiedHotel || "")).toLowerCase().trim();
   const foundDefinitive = HOTELS.some(h => h.keywords.some(kw => searchString.includes(kw)));
 
   return foundDefinitive ? hotel.name : "Unbekannt / Petul";
 }
+
 export async function query3RPMS<T>(apiKey: string, query: string, variables: any = {}): Promise<T> {
   if (!apiKey) {
     throw new Error("Missing 3RPMS API Key for this hotel. Please check your .env settings.");
@@ -64,7 +74,7 @@ export async function query3RPMS<T>(apiKey: string, query: string, variables: an
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
-      'Accept-Language': 'de', // Default to German
+      'Accept-Language': 'de',
     },
     body: JSON.stringify({
       query,
@@ -82,9 +92,6 @@ export async function query3RPMS<T>(apiKey: string, query: string, variables: an
   return result.data!;
 }
 
-/**
- * Example: Get Room Stays for a specific date range or ID
- */
 export async function getRoomStays(apiKey: string, filter: any = {}) {
   const query = `
     query GetRoomStays($filter: RoomStayFilter) {
@@ -112,9 +119,6 @@ export async function getRoomStays(apiKey: string, filter: any = {}) {
   return query3RPMS<any>(apiKey, query, { filter });
 }
 
-/**
- * Example: Get Reservation details by code
- */
 export async function getReservationByCode(apiKey: string, code: string) {
   const query = `
     query GetReservation($code: String!) {

@@ -93,11 +93,42 @@ function AgentWorkflow({ intent, draft_reply }: { intent?: string, draft_reply?:
     );
 }
 
+function AgentStatusHeader({ step, intent }: { step: number, intent?: string }) {
+    const agents = [
+        { name: "ROUTER", desc: intent || "Analysis", icon: BrainCircuit },
+        { name: "KNOWLEDGE", desc: "Context Loaded", icon: Terminal },
+        { name: "RESOLUTION", desc: "Draft Ready", icon: PenTool },
+    ];
+
+    return (
+        <div className="grid grid-cols-3 gap-4 mb-8">
+            {agents.map((agent, idx) => {
+                const isActive = step === idx;
+                const isDone = step > idx;
+                const Icon = agent.icon;
+                return (
+                    <div key={idx} className={`relative p-4 border-2 transition-all duration-500 ${isDone ? 'bg-black border-black text-white' : isActive ? 'bg-[#C38133] border-[#C38133] text-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]' : 'bg-white border-black/10 text-black/20'}`}>
+                        <div className="flex items-center gap-3">
+                            <Icon className={`w-5 h-5 ${isActive ? 'animate-pulse' : ''}`} />
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-black uppercase tracking-widest">{agent.name}</span>
+                                <span className={`text-[12px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
+                            </div>
+                        </div>
+                        {isDone && <CheckCircle2 className="absolute top-2 right-2 w-4 h-4 text-[#C38133]" />}
+                    </div>
+                )
+            })}
+        </div>
+    );
+}
+
 export function EmailFeed({ emails }: { emails: Email[] }) {
     const router = useRouter();
     const [selectedId, setSelectedId] = useState<string | null>(emails.find(e => e.status === 'processing')?.id || emails[0]?.id || null);
     const [actionStatus, setActionStatus] = useState<"idle" | "sending" | "rejecting">("idle");
     const [isMinimized, setIsMinimized] = useState(false);
+    const [step, setStep] = useState(0);
 
     const pendingCount = emails.filter(e => e.status === "processing").length;
     const currentMail = emails.find(e => e.id === selectedId);
@@ -106,6 +137,16 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
         const interval = setInterval(() => router.refresh(), 10000);
         return () => clearInterval(interval);
     }, [router]);
+
+    useEffect(() => {
+        if (currentMail) {
+            setStep(0);
+            const t1 = setTimeout(() => setStep(1), 600);
+            const t2 = setTimeout(() => setStep(2), 1200);
+            const t3 = setTimeout(() => setStep(3), 1800);
+            return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+        }
+    }, [selectedId, currentMail?.draft_reply]);
 
     const handleAction = async (status: "completed" | "rejected") => {
         if (!currentMail) return;
@@ -126,114 +167,110 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                 <AnimatePresence mode="wait">
                     {!isMinimized ? (
                         <motion.div 
-                            key="expanded-editorial"
-                            initial={{ opacity: 0, y: 15 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -25 }}
-                            className="w-full max-w-screen-2xl h-[90vh] flex bg-white border border-black border-2"
+                            key="expanded-focus-mode"
+                            initial={{ opacity: 0, scale: 0.99 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 1.01 }}
+                            className="w-full max-w-screen-2xl h-[92vh] flex bg-white border-4 border-black shadow-[30px_30px_0px_0px_rgba(0,0,0,1)]"
                         >
                             {/* LEFT SIDEBAR: PENDING */}
-                            <div className="w-96 border-r-2 border-black flex flex-col bg-[#F2EFE6]">
-                                <div className="p-8 flex items-end justify-between border-b-2 border-black bg-white">
-                                    <h1 className="text-3xl font-black uppercase tracking-tighter leading-none m-0 p-0">
-                                        PETULIA
-                                    </h1>
-                                    {pendingCount > 0 && (
-                                        <div className="text-[12px] font-bold text-[#C38133] uppercase tracking-widest border border-[#C38133] px-3 py-1 rounded-sm">
-                                            {pendingCount} PENDING
-                                        </div>
-                                    )}
+                            <div className="w-80 border-r-4 border-black flex flex-col bg-[#F2EFE6]">
+                                <div className="p-8 border-b-4 border-black bg-white">
+                                    <h1 className="text-4xl font-black uppercase tracking-tighter leading-none mb-2">PETULIA</h1>
+                                    <div className="text-[10px] font-bold text-[#C38133] uppercase tracking-widest flex items-center gap-2">
+                                        <div className="w-2 h-2 bg-[#C38133] animate-pulse" />
+                                        {pendingCount} PENDING
+                                    </div>
                                 </div>
                                 <div className="flex-1 overflow-y-auto custom-scrollbar">
                                     {emails.slice(0, 30).map(email => (
                                         <button 
                                             key={email.id}
                                             onClick={() => setSelectedId(email.id)}
-                                            className={`w-full text-left p-6 border-b border-black/10 transition-colors duration-200 ${selectedId === email.id ? "bg-black text-white" : "hover:bg-black/5 bg-transparent"}`}
+                                            className={`w-full text-left p-6 border-b-2 border-black/5 transition-all duration-200 ${selectedId === email.id ? "bg-black text-white" : "hover:bg-white bg-transparent"}`}
                                         >
-                                            <div className="flex items-center gap-3 mb-2">
-                                                <div className={`w-2 h-2 ${email.status === 'processing' ? 'bg-[#C38133]' : 'bg-black/20'}`} />
-                                                <span className={`text-[10px] font-bold uppercase tracking-widest ${selectedId === email.id ? "text-white/60" : "text-black/50"}`}>{new Date(email.received_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
-                                            </div>
-                                            <div className="text-[14px] font-bold uppercase truncate mb-1 tracking-tight leading-tight">{email.betreff || "Kein Betreff"}</div>
-                                            <div className={`text-[12px] truncate italic tracking-normal ${selectedId === email.id ? "text-white/80" : "text-black/70"}`}>{email.senders?.[0]?.name || email.senders?.[0]?.email}</div>
+                                            <div className="text-[12px] font-bold uppercase truncate mb-1 tracking-tight leading-tight">{email.betreff || "Kein Betreff"}</div>
+                                            <div className={`text-[10px] font-bold uppercase tracking-widest opacity-50`}>{new Date(email.received_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                         </button>
                                     ))}
                                 </div>
                             </div>
 
-                            {/* MAIN EDITORIAL VIEW */}
+                            {/* MAIN DECISION ENGINE */}
                             <div className="flex-1 flex flex-col min-w-0 bg-white">
                                 {currentMail ? (
                                     <div className="flex-1 flex flex-col overflow-hidden">
-                                        
-                                        {/* TOP META BAR */}
-                                        <div className="flex items-center justify-between p-6 lg:p-8 border-b-2 border-black bg-[#F2EFE6]">
+                                        {/* HEADER BAR */}
+                                        <div className="flex items-center justify-between px-10 py-6 border-b-4 border-black bg-white">
                                             <div className="flex items-center gap-6">
-                                                <div className="flex flex-col">
-                                                    <span className="text-[10px] font-bold uppercase tracking-widest text-black/50">HOTEL</span>
-                                                    <span className="text-[14px] font-black uppercase tracking-tight text-black">
-                                                        {currentMail.agent_logs?.target_hotel || "UNBEKANNT"}
-                                                    </span>
+                                                <div className="px-4 py-2 border-2 border-black bg-white text-[12px] font-black uppercase tracking-widest">
+                                                    {currentMail.agent_logs?.target_hotel || "PETUL HQ"}
                                                 </div>
-                                                <div className="w-px h-8 bg-black/20" />
-                                                <div className="flex flex-col">
-                                                    <span className="text-[10px] font-bold uppercase tracking-widest text-black/50">INTENT</span>
-                                                    <span className="text-[14px] font-black uppercase tracking-tight text-[#C38133]">
-                                                        {currentMail.intent || "ANALYSIERE"}
-                                                    </span>
-                                                </div>
+                                                <div className="text-[14px] font-black uppercase italic text-black/40">Decision Center</div>
                                             </div>
-                                            <button className="p-3 border-2 border-transparent hover:border-black rounded-sm transition-all text-black hover:bg-[#F2EFE6]" onClick={() => setIsMinimized(true)}>
-                                                <Minimize2 className="w-6 h-6" />
+                                            <button className="hover:rotate-90 transition-transform duration-500" onClick={() => setIsMinimized(true)}>
+                                                <Minimize2 className="w-8 h-8" />
                                             </button>
                                         </div>
 
-                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 min-h-0 bg-white">
-                                            {/* LEFT COLUMN: ORIGINAL EMAIL */}
-                                            <div className="lg:col-span-3 border-r-2 border-black p-6 lg:p-10 flex flex-col overflow-y-auto custom-scrollbar relative">
-                                                <div className="absolute top-6 left-8 text-[10px] font-black text-black/30 uppercase tracking-[0.2em]">ORIGINAL</div>
-                                                <div className="pt-6">
-                                                    <h2 className="text-2xl lg:text-3xl font-black text-black mb-8 uppercase leading-tight tracking-tighter">{currentMail.betreff}</h2>
-                                                    {currentMail.body_html ? (
-                                                        <div className="prose prose-sm lg:prose-base max-w-none font-sans text-black leading-relaxed" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
-                                                    ) : (
-                                                        <div className="text-base lg:text-lg font-serif text-black/80 leading-relaxed max-w-prose">&quot;{currentMail.body_text}&quot;</div>
-                                                    )}
-                                                </div>
+                                        <div className="flex-1 grid grid-cols-12 min-h-0">
+                                            {/* LEFT: ORIGINAL (SMALLER) */}
+                                            <div className="col-span-4 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-10">
+                                                <span className="text-[10px] font-black uppercase tracking-[0.4em] text-black/20 mb-6">Original Signal</span>
+                                                <h2 className="text-xl font-bold uppercase tracking-tight mb-8 leading-tight">{currentMail.betreff}</h2>
+                                                {currentMail.body_html ? (
+                                                    <div className="prose prose-sm opacity-80" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
+                                                ) : (
+                                                    <div className="text-base italic opacity-70">&quot;{currentMail.body_text}&quot;</div>
+                                                )}
                                             </div>
 
-                                            {/* RIGHT COLUMN: AI RESPONSE */}
-                                            <div className="lg:col-span-2 bg-black text-white p-6 lg:p-10 flex flex-col relative overflow-hidden">
+                                            {/* RIGHT: RESOLUTION (PRIMARY) */}
+                                            <div className="col-span-8 flex flex-col p-10 bg-white overflow-hidden">
+                                                <AgentStatusHeader step={step} intent={currentMail.intent} />
                                                 
-                                                <div className="flex-1 overflow-hidden min-h-0">
-                                                    <AgentWorkflow intent={currentMail.intent} draft_reply={currentMail.draft_reply} />
-                                                </div>
+                                                <div className="flex-1 flex flex-col min-h-0">
+                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em] text-[#C38133] mb-4">Final Resolution</span>
+                                                    
+                                                    <motion.div 
+                                                        initial={{ opacity: 0, y: 30 }}
+                                                        animate={{ opacity: step >= 3 ? 1 : 0.05, y: step >= 3 ? 0 : 10 }}
+                                                        className="flex-1 p-10 border-4 border-black bg-black text-white overflow-y-auto custom-scrollbar shadow-[15px_15px_0px_0px_#C38133]"
+                                                    >
+                                                        <div className="text-[22px] lg:text-[26px] font-bold leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
+                                                            {currentMail.draft_reply || "Architecting response..."}
+                                                        </div>
+                                                    </motion.div>
 
-                                                {/* ACTION BUTTONS */}
-                                                {currentMail.status === "processing" && (
-                                                    <div className="flex flex-col gap-4 mt-auto pt-6 border-t border-white/20">
-                                                        <button 
-                                                            onClick={() => handleAction("completed")} disabled={actionStatus !== "idle"}
-                                                            className="w-full py-5 bg-[#C38133] text-white hover:bg-white hover:text-black border-2 border-transparent transition-all text-[16px] font-black uppercase tracking-[0.1em] disabled:opacity-50 flex items-center justify-center gap-4 group"
+                                                    {/* MASTER APPROVAL ACTION */}
+                                                    {currentMail.status === "processing" && (
+                                                        <motion.div 
+                                                            initial={{ opacity: 0, scale: 0.9 }}
+                                                            animate={{ opacity: step >= 3 ? 1 : 0, scale: step >= 3 ? 1 : 0.95 }}
+                                                            className="mt-12 flex gap-6 h-28 shrink-0"
                                                         >
-                                                            FREIGEBEN & ABSENDEN
-                                                            <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => handleAction("rejected")} disabled={actionStatus !== "idle"}
-                                                            className="w-full py-5 bg-transparent border-2 border-white/30 hover:border-white text-white/70 hover:text-white transition-all text-[14px] font-bold uppercase tracking-[0.1em] disabled:opacity-20 flex items-center justify-center gap-2"
-                                                        >
-                                                            ABLEHNEN
-                                                        </button>
-                                                    </div>
-                                                )}
+                                                            <button 
+                                                                onClick={() => handleAction("completed")} disabled={actionStatus !== "idle" || step < 3}
+                                                                className="flex-[3] bg-black text-white hover:bg-[#C38133] border-4 border-black transition-all text-2xl font-black uppercase tracking-[0.3em] flex items-center justify-center gap-8 group disabled:opacity-30 active:translate-y-2 active:shadow-none shadow-[10px_10px_0px_0px_rgba(0,0,0,0.2)]"
+                                                            >
+                                                                DEPLOY RESOLUTION
+                                                                <ArrowRight className="w-10 h-10 group-hover:translate-x-4 transition-transform" />
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => handleAction("rejected")} disabled={actionStatus !== "idle"}
+                                                                className="flex-1 border-4 border-black hover:bg-rose-600 hover:text-white transition-all text-[14px] font-black uppercase tracking-widest flex items-center justify-center"
+                                                            >
+                                                                DISCARD
+                                                            </button>
+                                                        </motion.div>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
                                 ) : (
                                     <div className="flex-1 flex flex-col items-center justify-center bg-[#F2EFE6]">
-                                        <Layers className="w-16 h-16 text-black/10 animate-pulse" />
+                                        <Layers className="w-24 h-24 text-black/10 animate-pulse" />
                                     </div>
                                 )}
                             </div>

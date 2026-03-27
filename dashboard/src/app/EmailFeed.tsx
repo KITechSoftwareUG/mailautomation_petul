@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { 
-    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool
+    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool, Database, MessageSquare
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -27,29 +27,30 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-function AgentStatusHeader({ step, intent }: { step: number, intent?: string }) {
+function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: Email }) {
     const agents = [
-        { name: "PRÜFUNG", desc: intent || "Eingang...", icon: BrainCircuit },
-        { name: "WISSEN", desc: "Hotel-Infos geladen", icon: Terminal },
-        { name: "REAKTION", desc: "Antwort bereit", icon: PenTool },
+        { name: "PRÜFUNG", desc: currentMail.intent || "Eingang...", icon: BrainCircuit },
+        { name: "ERP-SYSTEM", desc: currentMail.api_action || "Datenabgleich...", icon: Database },
+        { name: "WISSEN", desc: "Regeln geladen", icon: Terminal },
+        { name: "VORBEREITUNG", desc: "Entwurf fertig", icon: PenTool },
     ];
 
     return (
-        <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-4 gap-4 mb-8">
             {agents.map((agent, idx) => {
                 const isActive = step === idx;
                 const isDone = step > idx;
                 const Icon = agent.icon;
                 return (
-                    <div key={idx} className={`relative p-4 border-2 transition-all duration-500 ${isDone ? 'bg-black border-black text-white' : isActive ? 'bg-[#C38133] border-[#C38133] text-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]' : 'bg-white border-black/10 text-black/20'}`}>
+                    <div key={idx} className={`relative p-3 border-2 transition-all duration-500 ${isDone ? 'bg-black border-black text-white' : isActive ? 'bg-[#C38133] border-[#C38133] text-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]' : 'bg-white border-black/10 text-black/20'}`}>
                         <div className="flex items-center gap-3">
-                            <Icon className={`w-5 h-5 ${isActive ? 'animate-pulse' : ''}`} />
-                            <div className="flex flex-col">
-                                <span className="text-[10px] font-black uppercase tracking-widest leading-tight">{agent.name}</span>
-                                <span className={`text-[12px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
+                            <Icon className={`w-4 h-4 ${isActive ? 'animate-pulse' : ''}`} />
+                            <div className="flex flex-col min-w-0">
+                                <span className="text-[9px] font-black uppercase tracking-widest leading-tight truncate">{agent.name}</span>
+                                <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
                             </div>
                         </div>
-                        {isDone && <CheckCircle2 className="absolute top-2 right-2 w-4 h-4 text-[#C38133]" />}
+                        {isDone && <CheckCircle2 className="absolute top-1 right-1 w-3 h-3 text-[#C38133]" />}
                     </div>
                 )
             })}
@@ -75,10 +76,11 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
     useEffect(() => {
         if (currentMail) {
             setStep(0);
-            const t1 = setTimeout(() => setStep(1), 600);
-            const t2 = setTimeout(() => setStep(2), 1200);
-            const t3 = setTimeout(() => setStep(3), 1800);
-            return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+            const t1 = setTimeout(() => setStep(1), 500);
+            const t2 = setTimeout(() => setStep(2), 1000);
+            const t3 = setTimeout(() => setStep(3), 1500);
+            const t4 = setTimeout(() => setStep(4), 2000);
+            return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); };
         }
     }, [selectedId, currentMail?.draft_reply]);
 
@@ -149,30 +151,55 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
 
                                         <div className="flex-1 grid grid-cols-12 min-h-0">
                                             {/* LEFT: ORIGINAL (SMALLER) */}
-                                            <div className="col-span-4 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-10">
-                                                <span className="text-[10px] font-black uppercase tracking-[0.4em] text-black/20 mb-6">Die E-Mail</span>
-                                                <h2 className="text-xl font-bold uppercase tracking-tight mb-8 leading-tight">{currentMail.betreff}</h2>
-                                                {currentMail.body_html ? (
-                                                    <div className="prose prose-sm opacity-80" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
+                                            <div className="col-span-4 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-8">
+                                                <div className="flex items-center gap-2 mb-6 opacity-30">
+                                                    <MessageSquare className="w-4 h-4" />
+                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">E-Mail Verlauf</span>
+                                                </div>
+                                                
+                                                {/* Actual Mail Content */}
+                                                <div className="mb-10 bg-white p-6 border-2 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,0.1)]">
+                                                    <h2 className="text-lg font-bold uppercase tracking-tight mb-4 leading-tight">{currentMail.betreff}</h2>
+                                                    {currentMail.body_html ? (
+                                                        <div className="prose prose-sm opacity-90 max-w-none break-words overflow-hidden" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
+                                                    ) : (
+                                                        <div className="text-sm italic opacity-80">&quot;{currentMail.body_text}&quot;</div>
+                                                    )}
+                                                </div>
+
+                                                {/* Simplified Thread/Context View */}
+                                                {currentMail.agent_logs?.relevant_context ? (
+                                                    <div className="mt-4 flex flex-col gap-4">
+                                                        <div className="h-px bg-black/10 w-full" />
+                                                        <span className="text-[9px] font-black uppercase tracking-widest text-black/40">Zusatz-Infos / Verlauf:</span>
+                                                        <div className="text-[13px] text-black/70 italic leading-relaxed bg-black/5 p-4 rounded-lg border border-black/5">
+                                                            {currentMail.agent_logs.relevant_context}
+                                                        </div>
+                                                    </div>
                                                 ) : (
-                                                    <div className="text-base italic opacity-70">&quot;{currentMail.body_text}&quot;</div>
+                                                    <div className="mt-4 text-[11px] uppercase font-bold text-black/20 text-center py-10 border-2 border-dashed border-black/10">
+                                                        Kein weiterer Verlauf gefunden
+                                                    </div>
                                                 )}
                                             </div>
 
                                             {/* RIGHT: RESOLUTION (PRIMARY) */}
-                                            <div className="col-span-8 flex flex-col p-10 bg-white overflow-hidden">
-                                                <AgentStatusHeader step={step} intent={currentMail.intent} />
+                                            <div className="col-span-8 flex flex-col p-8 bg-white overflow-hidden">
+                                                <AgentStatusHeader step={step} currentMail={currentMail} />
                                                 
                                                 <div className="flex-1 flex flex-col min-h-0">
-                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em] text-[#C38133] mb-4">Vorschlag für die Antwort:</span>
+                                                    <div className="flex items-center justify-between mb-4">
+                                                        <span className="text-[10px] font-black uppercase tracking-[0.4em] text-[#C38133]">Antwort-Entwurf (Testphase):</span>
+                                                        <div className="px-3 py-1 bg-[#C38133]/10 text-[#C38133] text-[9px] font-black uppercase rounded-full">Nur zur Ansicht</div>
+                                                    </div>
                                                     
                                                     <motion.div 
                                                         initial={{ opacity: 0, y: 30 }}
-                                                        animate={{ opacity: step >= 3 ? 1 : 0.05, y: step >= 3 ? 0 : 10 }}
+                                                        animate={{ opacity: step >= 4 ? 1 : 0.05, y: step >= 4 ? 0 : 10 }}
                                                         className="flex-1 p-10 border-4 border-black bg-black text-white overflow-y-auto custom-scrollbar shadow-[15px_15px_0px_0px_#C38133]"
                                                     >
-                                                        <div className="text-[22px] lg:text-[26px] font-bold leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
-                                                            {currentMail.draft_reply || "KI schreibt gerade..."}
+                                                        <div className="text-[22px] lg:text-[24px] font-bold leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
+                                                            {currentMail.draft_reply || "KI berechnet Antwort..."}
                                                         </div>
                                                     </motion.div>
 
@@ -180,21 +207,21 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                     {currentMail.status === "processing" && (
                                                         <motion.div 
                                                             initial={{ opacity: 0, scale: 0.9 }}
-                                                            animate={{ opacity: step >= 3 ? 1 : 0, scale: step >= 3 ? 1 : 0.95 }}
-                                                            className="mt-12 flex gap-6 h-28 shrink-0"
+                                                            animate={{ opacity: step >= 4 ? 1 : 0, scale: step >= 4 ? 1 : 0.95 }}
+                                                            className="mt-8 flex gap-6 h-28 shrink-0"
                                                         >
                                                             <button 
-                                                                onClick={() => handleAction("completed")} disabled={actionStatus !== "idle" || step < 3}
-                                                                className="flex-[3] bg-black text-white hover:bg-[#C38133] border-4 border-black transition-all text-2xl font-black uppercase tracking-[0.3em] flex items-center justify-center gap-8 group disabled:opacity-30 active:translate-y-2 active:shadow-none shadow-[10px_10px_0px_0px_rgba(0,0,0,0.2)]"
+                                                                onClick={() => handleAction("completed")} disabled={actionStatus !== "idle" || step < 4}
+                                                                className="flex-[3] bg-black text-white hover:bg-[#C38133] border-4 border-black transition-all text-2xl font-black uppercase tracking-[0.3em] flex items-center justify-center gap-8 group disabled:opacity-30 active:translate-y-2 active:shadow-none shadow-[12px_12px_0px_0px_rgba(0,0,0,0.1)]"
                                                             >
-                                                                JETZT ABSENDEN
+                                                                ENTWURF BESTÄTIGEN
                                                                 <ArrowRight className="w-10 h-10 group-hover:translate-x-4 transition-transform" />
                                                             </button>
                                                             <button 
                                                                 onClick={() => handleAction("rejected")} disabled={actionStatus !== "idle"}
-                                                                className="flex-1 border-4 border-black hover:bg-rose-600 hover:text-white transition-all text-[14px] font-black uppercase tracking-widest flex items-center justify-center"
+                                                                className="flex-1 border-4 border-black hover:bg-rose-600 hover:text-white transition-all text-[14px] font-black uppercase tracking-widest flex items-center justify-center opacity-40 hover:opacity-100"
                                                             >
-                                                                LÖSCHEN
+                                                                ABLEHNEN
                                                             </button>
                                                         </motion.div>
                                                     )}

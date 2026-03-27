@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { 
-    Bot, ArrowRight, Minimize2, Layers
+    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -26,6 +26,72 @@ type Email = {
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+function AgentWorkflow({ intent, draft_reply }: { intent?: string, draft_reply?: string}) {
+    const [step, setStep] = useState(0);
+
+    useEffect(() => {
+        setStep(0);
+        const t1 = setTimeout(() => setStep(1), 800);
+        const t2 = setTimeout(() => setStep(2), 1800);
+        const t3 = setTimeout(() => setStep(3), 2500);
+        return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+    }, [draft_reply]);
+
+    const agents = [
+        { name: "ROUTER AGENT", desc: `Intention analysiert: ${intent || "Unbekannt"}`, icon: BrainCircuit },
+        { name: "KNOWLEDGE AGENT", desc: "Hotel-Richtlinien & Kontext geladen", icon: Terminal },
+        { name: "RESOLUTION AGENT", desc: "Antwort-Logik & Draft erstellt", icon: PenTool },
+    ];
+
+    return (
+        <div className="flex flex-col gap-8 h-full">
+            {/* Agent Pipeline */}
+            <div className="flex flex-col gap-4">
+                <div className="text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] mb-2 flex items-center gap-2">
+                    <Bot className="w-4 h-4" /> ACTIVE AGENTS
+                </div>
+                {agents.map((agent, idx) => {
+                    const isActive = step === idx;
+                    const isDone = step > idx;
+                    const Icon = agent.icon;
+                    return (
+                        <motion.div 
+                            key={idx}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: step >= idx ? 1 : 0.3, x: 0 }}
+                            className={`flex items-start gap-4 p-4 border transition-all duration-500 ${isActive ? 'bg-white/10 border-white/40 shadow-lg' : 'border-white/10 bg-transparent'}`}
+                        >
+                            <div className="mt-1">
+                                {isDone ? <CheckCircle2 className="w-5 h-5 text-[#C38133]" /> : (isActive ? <CircleDashed className="w-5 h-5 text-white animate-spin" /> : <CircleDashed className="w-5 h-5 text-white/20" />)}
+                            </div>
+                            <div className="flex flex-col">
+                                <span className={`text-[12px] font-bold uppercase tracking-widest ${isActive ? 'text-white' : 'text-white/50'}`}>{agent.name}</span>
+                                <span className={`text-[14px] font-serif italic mt-1 transition-all ${isDone || isActive ? 'text-white/80' : 'text-transparent'}`}>{agent.desc}</span>
+                            </div>
+                        </motion.div>
+                    )
+                })}
+            </div>
+
+            {/* Final Resolution */}
+            <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: step >= 3 ? 1 : 0, y: step >= 3 ? 0 : 20 }}
+                className="flex-1 flex flex-col mt-2 border-t-2 border-white/20 pt-8 relative min-h-0"
+            >
+                <div className="text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] mb-4">
+                    FINAL RESOLUTION
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                    <div className="text-[16px] lg:text-[18px] font-medium leading-relaxed whitespace-pre-wrap tracking-tight text-white/90 font-serif relative z-10 selection:bg-[#C38133]">
+                        {draft_reply || "SUCHE NACH LÖSUNG..."}
+                    </div>
+                </div>
+            </motion.div>
+        </div>
+    );
+}
 
 export function EmailFeed({ emails }: { emails: Email[] }) {
     const router = useRouter();
@@ -139,14 +205,9 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
 
                                             {/* RIGHT COLUMN: AI RESPONSE */}
                                             <div className="bg-black text-white p-8 lg:p-12 flex flex-col relative overflow-hidden">
-                                                <div className="absolute top-6 left-12 text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] flex items-center gap-2">
-                                                    <Bot className="w-4 h-4" /> LÖSUNG
-                                                </div>
                                                 
-                                                <div className="flex-1 overflow-y-auto custom-scrollbar pt-8 pb-10">
-                                                    <div className="text-[18px] lg:text-[20px] font-medium leading-relaxed whitespace-pre-wrap tracking-tight text-white/90 font-serif">
-                                                        {currentMail.draft_reply || "ERSTELLE ANTWORT..."}
-                                                    </div>
+                                                <div className="flex-1 overflow-hidden">
+                                                    <AgentWorkflow intent={currentMail.intent} draft_reply={currentMail.draft_reply} />
                                                 </div>
 
                                                 {/* ACTION BUTTONS */}

@@ -27,77 +27,11 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-function AgentWorkflow({ intent, draft_reply }: { intent?: string, draft_reply?: string}) {
-    const [step, setStep] = useState(0);
-
-    useEffect(() => {
-        setStep(0);
-        const t1 = setTimeout(() => setStep(1), 800);
-        const t2 = setTimeout(() => setStep(2), 1800);
-        const t3 = setTimeout(() => setStep(3), 2500);
-        return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-    }, [draft_reply]);
-
-    const agents = [
-        { name: "ROUTER AGENT", desc: `Intention analysiert: ${intent || "Unbekannt"}`, icon: BrainCircuit },
-        { name: "KNOWLEDGE AGENT", desc: "Hotel-Richtlinien & Kontext geladen", icon: Terminal },
-        { name: "RESOLUTION AGENT", desc: "Antwort-Logik & Draft erstellt", icon: PenTool },
-    ];
-
-    return (
-        <div className="flex flex-col gap-8 h-full">
-            {/* Agent Pipeline */}
-            <div className="flex flex-col gap-4">
-                <div className="text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] mb-2 flex items-center gap-2">
-                    <Bot className="w-4 h-4" /> ACTIVE AGENTS
-                </div>
-                {agents.map((agent, idx) => {
-                    const isActive = step === idx;
-                    const isDone = step > idx;
-                    const Icon = agent.icon;
-                    return (
-                        <motion.div 
-                            key={idx}
-                            initial={{ opacity: 0, x: -10 }}
-                            animate={{ opacity: step >= idx ? 1 : 0.3, x: 0 }}
-                            className={`flex items-start gap-4 p-4 border transition-all duration-500 ${isActive ? 'bg-white/10 border-white/40 shadow-lg' : 'border-white/10 bg-transparent'}`}
-                        >
-                            <div className="mt-1">
-                                {isDone ? <CheckCircle2 className="w-5 h-5 text-[#C38133]" /> : (isActive ? <CircleDashed className="w-5 h-5 text-white animate-spin" /> : <CircleDashed className="w-5 h-5 text-white/20" />)}
-                            </div>
-                            <div className="flex flex-col">
-                                <span className={`text-[12px] font-bold uppercase tracking-widest ${isActive ? 'text-white' : 'text-white/50'}`}>{agent.name}</span>
-                                <span className={`text-[14px] font-serif italic mt-1 transition-all ${isDone || isActive ? 'text-white/80' : 'text-transparent'}`}>{agent.desc}</span>
-                            </div>
-                        </motion.div>
-                    )
-                })}
-            </div>
-
-            {/* Final Resolution */}
-            <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: step >= 3 ? 1 : 0, y: step >= 3 ? 0 : 20 }}
-                className="flex-1 flex flex-col mt-2 border-t-2 border-white/20 pt-6 relative min-h-0 overflow-hidden"
-            >
-                <div className="text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] mb-4 shrink-0">
-                    FINAL RESOLUTION
-                </div>
-                <div className="flex-1 overflow-y-auto custom-scrollbar pb-4 pr-2">
-                    <div className="text-[15px] lg:text-[17px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide text-white/95 font-serif relative z-10 selection:bg-[#C38133]">
-                        {draft_reply || "LÖSUNG WIRD ERSTELLT..."}
-                    </div>
-                </div>
-            </motion.div>
-        </div>
-    );
-}
-
 function AgentStatusHeader({ step, intent }: { step: number, intent?: string }) {
     const agents = [
-        { name: "ROUTER", desc: intent || "Analysis", icon: BrainCircuit },
-        { name: "KNOWLEDGE", desc: "Context Loaded", icon: Terminal },
-        { name: "RESOLUTION", desc: "Draft Ready", icon: PenTool },
+        { name: "PRÜFUNG", desc: intent || "Eingang...", icon: BrainCircuit },
+        { name: "WISSEN", desc: "Hotel-Infos geladen", icon: Terminal },
+        { name: "REAKTION", desc: "Antwort bereit", icon: PenTool },
     ];
 
     return (
@@ -111,7 +45,7 @@ function AgentStatusHeader({ step, intent }: { step: number, intent?: string }) 
                         <div className="flex items-center gap-3">
                             <Icon className={`w-5 h-5 ${isActive ? 'animate-pulse' : ''}`} />
                             <div className="flex flex-col">
-                                <span className="text-[10px] font-black uppercase tracking-widest">{agent.name}</span>
+                                <span className="text-[10px] font-black uppercase tracking-widest leading-tight">{agent.name}</span>
                                 <span className={`text-[12px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
                             </div>
                         </div>
@@ -179,7 +113,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                     <h1 className="text-4xl font-black uppercase tracking-tighter leading-none mb-2">PETULIA</h1>
                                     <div className="text-[10px] font-bold text-[#C38133] uppercase tracking-widest flex items-center gap-2">
                                         <div className="w-2 h-2 bg-[#C38133] animate-pulse" />
-                                        {pendingCount} PENDING
+                                        {pendingCount} NEUE MAILS
                                     </div>
                                 </div>
                                 <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -190,7 +124,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                             className={`w-full text-left p-6 border-b-2 border-black/5 transition-all duration-200 ${selectedId === email.id ? "bg-black text-white" : "hover:bg-white bg-transparent"}`}
                                         >
                                             <div className="text-[12px] font-bold uppercase truncate mb-1 tracking-tight leading-tight">{email.betreff || "Kein Betreff"}</div>
-                                            <div className={`text-[10px] font-bold uppercase tracking-widest opacity-50`}>{new Date(email.received_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                            <div className={`text-[10px] font-bold uppercase tracking-widest opacity-50`}>{new Date(email.received_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} UHR</div>
                                         </button>
                                     ))}
                                 </div>
@@ -204,11 +138,11 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                         <div className="flex items-center justify-between px-10 py-6 border-b-4 border-black bg-white">
                                             <div className="flex items-center gap-6">
                                                 <div className="px-4 py-2 border-2 border-black bg-white text-[12px] font-black uppercase tracking-widest">
-                                                    {currentMail.agent_logs?.target_hotel || "PETUL HQ"}
+                                                    {currentMail.agent_logs?.target_hotel || "HAUPTHAUS"}
                                                 </div>
-                                                <div className="text-[14px] font-black uppercase italic text-black/40">Decision Center</div>
+                                                <div className="text-[14px] font-black uppercase italic text-black/40">Zentrale Ansicht</div>
                                             </div>
-                                            <button className="hover:rotate-90 transition-transform duration-500" onClick={() => setIsMinimized(true)}>
+                                            <button className="hover:rotate-90 transition-transform duration-500" title="Bildschirmschoner" onClick={() => setIsMinimized(true)}>
                                                 <Minimize2 className="w-8 h-8" />
                                             </button>
                                         </div>
@@ -216,7 +150,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                         <div className="flex-1 grid grid-cols-12 min-h-0">
                                             {/* LEFT: ORIGINAL (SMALLER) */}
                                             <div className="col-span-4 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-10">
-                                                <span className="text-[10px] font-black uppercase tracking-[0.4em] text-black/20 mb-6">Original Signal</span>
+                                                <span className="text-[10px] font-black uppercase tracking-[0.4em] text-black/20 mb-6">Die E-Mail</span>
                                                 <h2 className="text-xl font-bold uppercase tracking-tight mb-8 leading-tight">{currentMail.betreff}</h2>
                                                 {currentMail.body_html ? (
                                                     <div className="prose prose-sm opacity-80" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
@@ -230,7 +164,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                 <AgentStatusHeader step={step} intent={currentMail.intent} />
                                                 
                                                 <div className="flex-1 flex flex-col min-h-0">
-                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em] text-[#C38133] mb-4">Final Resolution</span>
+                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em] text-[#C38133] mb-4">Vorschlag für die Antwort:</span>
                                                     
                                                     <motion.div 
                                                         initial={{ opacity: 0, y: 30 }}
@@ -238,7 +172,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                         className="flex-1 p-10 border-4 border-black bg-black text-white overflow-y-auto custom-scrollbar shadow-[15px_15px_0px_0px_#C38133]"
                                                     >
                                                         <div className="text-[22px] lg:text-[26px] font-bold leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
-                                                            {currentMail.draft_reply || "Architecting response..."}
+                                                            {currentMail.draft_reply || "KI schreibt gerade..."}
                                                         </div>
                                                     </motion.div>
 
@@ -253,14 +187,14 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                                 onClick={() => handleAction("completed")} disabled={actionStatus !== "idle" || step < 3}
                                                                 className="flex-[3] bg-black text-white hover:bg-[#C38133] border-4 border-black transition-all text-2xl font-black uppercase tracking-[0.3em] flex items-center justify-center gap-8 group disabled:opacity-30 active:translate-y-2 active:shadow-none shadow-[10px_10px_0px_0px_rgba(0,0,0,0.2)]"
                                                             >
-                                                                DEPLOY RESOLUTION
+                                                                JETZT ABSENDEN
                                                                 <ArrowRight className="w-10 h-10 group-hover:translate-x-4 transition-transform" />
                                                             </button>
                                                             <button 
                                                                 onClick={() => handleAction("rejected")} disabled={actionStatus !== "idle"}
                                                                 className="flex-1 border-4 border-black hover:bg-rose-600 hover:text-white transition-all text-[14px] font-black uppercase tracking-widest flex items-center justify-center"
                                                             >
-                                                                DISCARD
+                                                                LÖSCHEN
                                                             </button>
                                                         </motion.div>
                                                     )}
@@ -287,7 +221,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                             <h1 className="text-[100px] lg:text-[180px] font-black leading-none text-black uppercase tracking-tighter m-0 p-0">PETULIA</h1>
                             <div className="flex items-center gap-6 mt-8">
                                 <div className="h-1 flex-1 bg-black" />
-                                <p className="text-[16px] lg:text-[24px] uppercase font-bold tracking-[0.2em] text-[#C38133] m-0">INBOX SYSTEM</p>
+                                <p className="text-[16px] lg:text-[24px] uppercase font-bold tracking-[0.2em] text-[#C38133] m-0">ASSISTENT BEREIT</p>
                                 <div className="h-1 flex-1 bg-black" />
                             </div>
                         </motion.div>

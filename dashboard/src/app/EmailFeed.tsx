@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { 
-    Check, X, Bot, ArrowRight, Zap, Minimize2, Layers
+    Bot, ArrowRight, Minimize2, Layers
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";

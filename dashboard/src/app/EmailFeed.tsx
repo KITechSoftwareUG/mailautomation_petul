@@ -78,14 +78,14 @@ function AgentWorkflow({ intent, draft_reply }: { intent?: string, draft_reply?:
             <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: step >= 3 ? 1 : 0, y: step >= 3 ? 0 : 20 }}
-                className="flex-1 flex flex-col mt-2 border-t-2 border-white/20 pt-8 relative min-h-0"
+                className="flex-1 flex flex-col mt-2 border-t-2 border-white/20 pt-6 relative min-h-0 overflow-hidden"
             >
-                <div className="text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] mb-4">
+                <div className="text-[10px] font-black text-[#C38133] uppercase tracking-[0.2em] mb-4 shrink-0">
                     FINAL RESOLUTION
                 </div>
-                <div className="flex-1 overflow-y-auto custom-scrollbar">
-                    <div className="text-[16px] lg:text-[18px] font-medium leading-relaxed whitespace-pre-wrap tracking-tight text-white/90 font-serif relative z-10 selection:bg-[#C38133]">
-                        {draft_reply || "SUCHE NACH LÖSUNG..."}
+                <div className="flex-1 overflow-y-auto custom-scrollbar pb-4 pr-2">
+                    <div className="text-[15px] lg:text-[17px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide text-white/95 font-serif relative z-10 selection:bg-[#C38133]">
+                        {draft_reply || "LÖSUNG WIRD ERSTELLT..."}
                     </div>
                 </div>
             </motion.div>
@@ -189,24 +189,24 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                             </button>
                                         </div>
 
-                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 min-h-0 bg-white">
+                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 min-h-0 bg-white">
                                             {/* LEFT COLUMN: ORIGINAL EMAIL */}
-                                            <div className="border-r-2 border-black p-8 lg:p-12 flex flex-col overflow-y-auto custom-scrollbar relative">
-                                                <div className="absolute top-6 left-12 text-[10px] font-black text-black/30 uppercase tracking-[0.2em]">ORIGINAL</div>
-                                                <div className="pt-8">
-                                                    <h2 className="text-4xl lg:text-5xl font-black text-black mb-12 uppercase leading-none tracking-tighter">{currentMail.betreff}</h2>
+                                            <div className="lg:col-span-3 border-r-2 border-black p-6 lg:p-10 flex flex-col overflow-y-auto custom-scrollbar relative">
+                                                <div className="absolute top-6 left-8 text-[10px] font-black text-black/30 uppercase tracking-[0.2em]">ORIGINAL</div>
+                                                <div className="pt-6">
+                                                    <h2 className="text-2xl lg:text-3xl font-black text-black mb-8 uppercase leading-tight tracking-tighter">{currentMail.betreff}</h2>
                                                     {currentMail.body_html ? (
-                                                        <div className="prose prose-base lg:prose-lg max-w-none font-sans text-black leading-relaxed" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
+                                                        <div className="prose prose-sm lg:prose-base max-w-none font-sans text-black leading-relaxed" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
                                                     ) : (
-                                                        <div className="text-lg lg:text-xl font-serif text-black/80 leading-relaxed max-w-prose">&quot;{currentMail.body_text}&quot;</div>
+                                                        <div className="text-base lg:text-lg font-serif text-black/80 leading-relaxed max-w-prose">&quot;{currentMail.body_text}&quot;</div>
                                                     )}
                                                 </div>
                                             </div>
 
                                             {/* RIGHT COLUMN: AI RESPONSE */}
-                                            <div className="bg-black text-white p-8 lg:p-12 flex flex-col relative overflow-hidden">
+                                            <div className="lg:col-span-2 bg-black text-white p-6 lg:p-10 flex flex-col relative overflow-hidden">
                                                 
-                                                <div className="flex-1 overflow-hidden">
+                                                <div className="flex-1 overflow-hidden min-h-0">
                                                     <AgentWorkflow intent={currentMail.intent} draft_reply={currentMail.draft_reply} />
                                                 </div>
 

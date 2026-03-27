@@ -8,13 +8,13 @@
 }
 
 :root {
-  --background: #fdfdff;
-  --foreground: #1e293b;
-  --primary: #4f46e5;
+  --background: #F2EFE6;
+  --foreground: #000000;
+  --terracotta: #C38133;
 }
 
 body {
-  background: radial-gradient(circle at top left, #f5f8ff 0%, #ffffff 40%, #f0f4ff 100%);
+  background-color: var(--background);
   color: var(--foreground);
   min-height: 100vh;
   margin: 0;
@@ -23,70 +23,20 @@ body {
   position: relative;
 }
 
-/* Light Screensaver Background */
-body::before {
-  content: "";
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: radial-gradient(circle at center, rgba(79, 70, 229, 0.03) 0%, transparent 70%);
-  animation: rotateBg 60s linear infinite;
-  z-index: -1;
-}
-
-@keyframes rotateBg {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.glass-panel {
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(50px);
-  -webkit-backdrop-filter: blur(50px);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  box-shadow: 0 40px 100px -20px rgba(0, 0, 0, 0.05), 0 10px 30px -10px rgba(79, 70, 229, 0.1);
-}
-
-.petulia-float {
-  animation: float 12s ease-in-out infinite;
-}
-
-@keyframes float {
-
-  0%,
-  100% {
-    transform: translate(0, 0) scale(1);
-    filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.05));
-  }
-
-  50% {
-    transform: translate(5px, -15px) scale(1.01);
-    filter: drop-shadow(0 30px 60px rgba(0, 0, 0, 0.1));
-  }
-}
-
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .prose {
-  color: #475569;
+  color: #000;
 }
 
 .prose h1,
 .prose h2,
 .prose strong {
-  color: #0f172a;
+  color: #000;
 }

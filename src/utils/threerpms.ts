@@ -10,14 +10,11 @@ export interface ThreeRPMSResponse<T> {
 }
 
 export const HOTELS = [
-  { id: "H1", name: "Hotel an der Zeche", keywords: ["zeche", "petul.de"], key: process.env.THREE_RPMS_API_KEY_H1 },
-  { id: "H2", name: "Hotel Anne 40", keywords: ["anne40"], key: process.env.THREE_RPMS_API_KEY_H2 },
-  { id: "H3", name: "Art Hotel Brunnen", keywords: ["brunnen"], key: process.env.THREE_RPMS_API_KEY_H3 },
-  { id: "H4", name: "Aparthotel Residenz", keywords: ["residenz"], key: process.env.THREE_RPMS_API_KEY_H4 },
-  { id: "H5", name: "Apart Hotel Am Ruhrbogen", keywords: ["ruhrbogen"], key: process.env.THREE_RPMS_API_KEY_H5 },
-  { id: "H6", name: "Hotel City", keywords: ["city"], key: process.env.THREE_RPMS_API_KEY_H6 },
-  { id: "H7", name: "Hotel Savoy", keywords: ["savoy"], key: process.env.THREE_RPMS_API_KEY_H7 },
-  { id: "H8", name: "Charming Hotel", keywords: ["charming"], key: process.env.THREE_RPMS_API_KEY_H8 },
+  { id: "H1", name: "Hotel Petul \"An der Zeche\"", keywords: ["zeche", "petul.de", "petul-zeche"], key: process.env.THREE_RPMS_API_KEY_H1 },
+  { id: "H2", name: "Hotel Apart \"An'ne 40\"", keywords: ["anne40", "anne 40", "anne-40"], key: process.env.THREE_RPMS_API_KEY_H2 },
+  { id: "H3", name: "Hotel Apart \"Residenz\"", keywords: ["residenz"], key: process.env.THREE_RPMS_API_KEY_H4 },
+  { id: "H4", name: "Hotel Apart \"Am Ruhrbogen\"", keywords: ["ruhrbogen"], key: process.env.THREE_RPMS_API_KEY_H5 },
+  { id: "H5", name: "Art Hotel Brunnen", keywords: ["brunnen"], key: process.env.THREE_RPMS_API_KEY_H3 },
 ];
 
 /**

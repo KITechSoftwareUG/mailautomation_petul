@@ -28,9 +28,12 @@ const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: Email }) {
+    const hotelName = currentMail.agent_logs?.target_hotel || "UNKLAR";
+    const erpDesc = hotelName === "UNKLAR" ? "Hotel unklar" : `Prüfe ${hotelName}`;
+    
     const agents = [
         { name: "PRÜFUNG", desc: currentMail.intent || "Eingang...", icon: BrainCircuit },
-        { name: "ERP-SYSTEM", desc: currentMail.api_action || "Datenabgleich...", icon: Database },
+        { name: "HOTEL-SYSTEM", desc: erpDesc, icon: Database },
         { name: "WISSEN", desc: "Regeln geladen", icon: Terminal },
         { name: "VORBEREITUNG", desc: "Entwurf fertig", icon: PenTool },
     ];
@@ -41,8 +44,10 @@ function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: E
                 const isActive = step === idx;
                 const isDone = step > idx;
                 const Icon = agent.icon;
+                const isWarning = agent.name === "HOTEL-SYSTEM" && hotelName === "UNKLAR" && (isActive || isDone);
+
                 return (
-                    <div key={idx} className={`relative p-3 border-2 transition-all duration-500 ${isDone ? 'bg-black border-black text-white' : isActive ? 'bg-[#C38133] border-[#C38133] text-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]' : 'bg-white border-black/10 text-black/20'}`}>
+                    <div key={idx} className={`relative p-3 border-2 transition-all duration-500 ${isDone ? 'bg-black border-black text-white' : isActive ? 'bg-[#C38133] border-[#C38133] text-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]' : 'bg-white border-black/10 text-black/20'} ${isWarning ? 'border-rose-500 !text-rose-500' : ''}`}>
                         <div className="flex items-center gap-3">
                             <Icon className={`w-4 h-4 ${isActive ? 'animate-pulse' : ''}`} />
                             <div className="flex flex-col min-w-0">
@@ -50,7 +55,7 @@ function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: E
                                 <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
                             </div>
                         </div>
-                        {isDone && <CheckCircle2 className="absolute top-1 right-1 w-3 h-3 text-[#C38133]" />}
+                        {isDone && !isWarning && <CheckCircle2 className="absolute top-1 right-1 w-3 h-3 text-[#C38133]" />}
                     </div>
                 )
             })}
@@ -196,9 +201,9 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                     <motion.div 
                                                         initial={{ opacity: 0, y: 30 }}
                                                         animate={{ opacity: step >= 4 ? 1 : 0.05, y: step >= 4 ? 0 : 10 }}
-                                                        className="flex-1 p-10 border-4 border-black bg-black text-white overflow-y-auto custom-scrollbar shadow-[15px_15px_0px_0px_#C38133]"
+                                                        className="flex-1 p-8 border-2 border-black bg-[#F9F7F2] text-black overflow-y-auto custom-scrollbar shadow-[10px_10px_0px_0px_rgba(0,0,0,0.05)]"
                                                     >
-                                                        <div className="text-[22px] lg:text-[24px] font-bold leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
+                                                        <div className="text-[18px] lg:text-[20px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
                                                             {currentMail.draft_reply || "KI berechnet Antwort..."}
                                                         </div>
                                                     </motion.div>

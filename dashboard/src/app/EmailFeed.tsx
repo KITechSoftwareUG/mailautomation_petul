@@ -155,8 +155,8 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                         </div>
 
                                         <div className="flex-1 grid grid-cols-12 min-h-0">
-                                            {/* LEFT: ORIGINAL (SMALLER) */}
-                                            <div className="col-span-4 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-8">
+                                            {/* LEFT: ORIGINAL (WIDER) */}
+                                            <div className="col-span-5 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-8">
                                                 <div className="flex items-center gap-2 mb-6 opacity-30">
                                                     <MessageSquare className="w-4 h-4" />
                                                     <span className="text-[10px] font-black uppercase tracking-[0.4em]">E-Mail Verlauf</span>
@@ -188,8 +188,8 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                 )}
                                             </div>
 
-                                            {/* RIGHT: RESOLUTION (PRIMARY) */}
-                                            <div className="col-span-8 flex flex-col p-8 bg-white overflow-hidden">
+                                            {/* RIGHT: RESOLUTION */}
+                                            <div className="col-span-7 flex flex-col p-8 bg-white overflow-hidden">
                                                 <AgentStatusHeader step={step} currentMail={currentMail} />
                                                 
                                                 <div className="flex-1 flex flex-col min-h-0">
@@ -203,8 +203,18 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                         animate={{ opacity: step >= 4 ? 1 : 0.05, y: step >= 4 ? 0 : 10 }}
                                                         className="flex-1 p-8 border-2 border-black bg-[#F9F7F2] text-black overflow-y-auto custom-scrollbar shadow-[10px_10px_0px_0px_rgba(0,0,0,0.05)]"
                                                     >
-                                                        <div className="text-[18px] lg:text-[20px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white">
-                                                            {currentMail.draft_reply || "KI berechnet Antwort..."}
+                                                        <div className="text-[18px] lg:text-[20px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide font-serif selection:bg-[#C38133] selection:text-white h-full flex flex-col justify-center">
+                                                            {currentMail.status === "ignored" || currentMail.intent === "Spam/Irrelevant" ? (
+                                                                <div className="flex flex-col items-center justify-center text-rose-500 gap-4 py-12">
+                                                                    <div className="w-16 h-16 border-4 border-rose-500 flex items-center justify-center font-black text-3xl">!</div>
+                                                                    <div className="text-2xl font-black uppercase tracking-widest text-center leading-tight">
+                                                                        SPAM / IRRELEVANT<br/>
+                                                                        <span className="text-xs font-bold opacity-60 tracking-normal">Petulia hat diese Mail als nicht relevant eingestuft.</span>
+                                                                    </div>
+                                                                </div>
+                                                            ) : (
+                                                                currentMail.draft_reply || "Petulia berechnet Antwort..."
+                                                            )}
                                                         </div>
                                                     </motion.div>
 
@@ -253,7 +263,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                             <h1 className="text-[100px] lg:text-[180px] font-black leading-none text-black uppercase tracking-tighter m-0 p-0">PETULIA</h1>
                             <div className="flex items-center gap-6 mt-8">
                                 <div className="h-1 flex-1 bg-black" />
-                                <p className="text-[16px] lg:text-[24px] uppercase font-bold tracking-[0.2em] text-[#C38133] m-0">ASSISTENT BEREIT</p>
+                                <p className="text-[16px] lg:text-[24px] uppercase font-bold tracking-[0.2em] text-[#C38133] m-0">PETULIA BEREIT</p>
                                 <div className="h-1 flex-1 bg-black" />
                             </div>
                         </motion.div>

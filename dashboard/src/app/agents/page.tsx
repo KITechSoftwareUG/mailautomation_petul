@@ -56,7 +56,7 @@ export default function AgentConfigPage() {
                                 <Bot className="w-7 h-7 text-indigo-600" />
                                 Petulias Fähigkeiten
                             </h1>
-                            <p className="text-sm text-slate-500 mt-0.5">Prompt Engineering & Verhaltensregeln der KI-Assistentin Petulia</p>
+                            <p className="text-sm text-slate-500 mt-0.5">Prompt Engineering & Verhaltensregeln der digitalen Assistentin Petulia</p>
                         </div>
                     </div>
                     {showSuccess && (

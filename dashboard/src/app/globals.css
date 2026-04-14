@@ -8,9 +8,18 @@
 }
 
 :root {
-  --background: #F2EFE6;
+  --background: #F9F9F9;
   --foreground: #000000;
-  --terracotta: #C38133;
+  --petul-blue: #6082B6;
+  --petul-red: #E2001A;
+  --petul-anthracite: #444444;
+  --petul-gray: #F2F2F2;
+  
+  /* The Petul Spectrum Bar colors */
+  --spectrum-1: #E2001A;
+  --spectrum-2: #F39200;
+  --spectrum-3: #009697;
+  --spectrum-4: #6082B6;
 }
 
 body {

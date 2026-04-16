@@ -168,15 +168,15 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
 
                                         <div className="flex-1 grid grid-cols-12 min-h-0">
                                             {/* LEFT: ORIGINAL (WIDER) */}
-                                            <div className="col-span-5 border-r-4 border-black bg-[#F2EFE6]/30 flex flex-col overflow-y-auto custom-scrollbar p-8">
+                                            <div className="col-span-4 border-r border-black/10 bg-[#F9F9F9] flex flex-col overflow-y-auto custom-scrollbar p-6">
                                                 <div className="flex items-center gap-2 mb-6 opacity-30">
                                                     <MessageSquare className="w-4 h-4" />
-                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">E-Mail Verlauf</span>
+                                                    <span className="text-[9px] font-black uppercase tracking-[0.4em]">E-Mail Verlauf</span>
                                                 </div>
                                                 
                                                 {/* Actual Mail Content */}
-                                                <div className="mb-10 bg-white p-8 border border-black/5 shadow-sm rounded-none">
-                                                    <h2 className="text-xl font-bold tracking-tight mb-5 leading-tight">{currentMail.betreff}</h2>
+                                                <div className="mb-8 bg-white p-6 border border-black/5 shadow-sm rounded-none">
+                                                    <h2 className="text-lg font-bold tracking-tight mb-4 leading-tight">{currentMail.betreff}</h2>
                                                     {currentMail.body_html ? (
                                                         <div className="prose prose-sm opacity-90 max-w-none break-words overflow-hidden" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
                                                     ) : (
@@ -186,22 +186,21 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
 
                                                 {/* Simplified Thread/Context View */}
                                                 {currentMail.agent_logs?.relevant_context ? (
-                                                    <div className="mt-4 flex flex-col gap-4">
-                                                        <div className="h-px bg-black/10 w-full" />
-                                                        <span className="text-[9px] font-black uppercase tracking-widest text-black/40">Zusatz-Infos / Verlauf:</span>
-                                                        <div className="text-[13px] text-black/70 italic leading-relaxed bg-black/5 p-4 rounded-lg border border-black/5">
+                                                    <div className="mt-2 flex flex-col gap-3">
+                                                        <span className="text-[9px] font-black uppercase tracking-widest text-[#6082B6]">Historischer Kontext:</span>
+                                                        <div className="text-[12px] text-black/60 italic leading-relaxed bg-white p-4 border border-black/5">
                                                             {currentMail.agent_logs.relevant_context}
                                                         </div>
                                                     </div>
                                                 ) : (
-                                                    <div className="mt-4 text-[11px] uppercase font-bold text-black/20 text-center py-10 border-2 border-dashed border-black/10">
-                                                        Kein weiterer Verlauf gefunden
+                                                    <div className="mt-2 text-[10px] uppercase font-bold text-black/10 text-center py-6 border border-dashed border-black/10">
+                                                        Keine weiteren Daten
                                                     </div>
                                                 )}
                                             </div>
 
-                                            {/* RIGHT: RESOLUTION */}
-                                            <div className="col-span-7 flex flex-col p-8 bg-white overflow-hidden">
+                                            {/* CENTER: RESOLUTION */}
+                                            <div className="col-span-5 flex flex-col p-8 bg-white overflow-hidden border-r border-black/10">
                                                 <AgentStatusHeader step={step} currentMail={currentMail} />
                                                 
                                                 <div className="flex-1 flex flex-col min-h-0">
@@ -213,15 +212,15 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                     <motion.div 
                                                         initial={{ opacity: 0, y: 30 }}
                                                         animate={{ opacity: step >= 4 ? 1 : 0.05, y: step >= 4 ? 0 : 10 }}
-                                                        className="flex-1 p-10 border border-black/10 bg-white text-black overflow-y-auto custom-scrollbar shadow-inner rounded-none"
+                                                        className="flex-1 p-8 border border-black/10 bg-white text-black overflow-y-auto custom-scrollbar shadow-inner rounded-none"
                                                     >
-                                                        <div className="text-[17px] lg:text-[19px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide font-sans selection:bg-[#6082B6] selection:text-white h-full flex flex-col justify-center">
+                                                        <div className="text-[16px] lg:text-[17px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide font-sans selection:bg-[#6082B6] selection:text-white h-full">
                                                             {currentMail.status === "ignored" || currentMail.intent === "Spam/Irrelevant" ? (
                                                                 <div className="flex flex-col items-center justify-center text-[#E2001A] gap-4 py-12">
                                                                     <div className="w-16 h-16 border-2 border-[#E2001A] flex items-center justify-center font-bold text-3xl rounded-none">!</div>
-                                                                    <div className="text-xl font-bold uppercase tracking-widest text-center leading-tight">
+                                                                    <div className="text-lg font-bold uppercase tracking-widest text-center leading-tight">
                                                                         SPAM / IRRELEVANT<br/>
-                                                                        <span className="text-xs font-medium opacity-60 tracking-normal capitalize">Petulia hat diese Nachricht als nicht relevant eingestuft.</span>
+                                                                        <span className="text-[10px] font-medium opacity-60 tracking-normal capitalize">Nachricht als nicht relevant eingestuft.</span>
                                                                     </div>
                                                                 </div>
                                                             ) : (
@@ -235,22 +234,84 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                         <motion.div 
                                                             initial={{ opacity: 0, scale: 0.9 }}
                                                             animate={{ opacity: step >= 4 ? 1 : 0, scale: step >= 4 ? 1 : 0.95 }}
-                                                            className="mt-8 flex gap-6 h-24 shrink-0"
+                                                            className="mt-8 flex gap-4 h-20 shrink-0"
                                                         >
                                                             <button 
                                                                 onClick={() => handleAction("completed")} disabled={actionStatus !== "idle" || step < 4}
-                                                                className="flex-[3] bg-[#6082B6] text-white hover:bg-[#444444] border-0 rounded-none transition-all text-xl font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-6 group disabled:opacity-30 active:translate-y-1 shadow-lg"
+                                                                className="flex-[3] bg-[#6082B6] text-white hover:bg-[#444444] border-0 rounded-none transition-all text-lg font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-4 group disabled:opacity-30 active:translate-y-1 shadow-lg"
                                                             >
-                                                                JETZT BESTÄTIGEN
-                                                                <ArrowRight className="w-8 h-8 group-hover:translate-x-2 transition-transform" />
+                                                                BESTÄTIGEN
+                                                                <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
                                                             </button>
                                                             <button 
                                                                 onClick={() => handleAction("rejected")} disabled={actionStatus !== "idle"}
-                                                                className="flex-1 border border-black/10 bg-white hover:bg-[#E2001A] hover:text-white rounded-none transition-all text-[12px] font-bold uppercase tracking-widest flex items-center justify-center text-black/40 hover:opacity-100 shadow-sm"
+                                                                className="flex-1 border border-black/10 bg-white hover:bg-[#E2001A] hover:text-white rounded-none transition-all text-[10px] font-bold uppercase tracking-widest flex items-center justify-center text-black/40 hover:opacity-100 shadow-sm"
                                                             >
                                                                 ABLEHNEN
                                                             </button>
                                                         </motion.div>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* RIGHT: PMS EVIDENCE */}
+                                            <div className="col-span-3 flex flex-col p-6 bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
+                                                <div className="flex items-center gap-2 mb-6 text-[#444444]">
+                                                    <Database className="w-4 h-4 text-[#6082B6]" />
+                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">PMS Datenabgleich</span>
+                                                </div>
+
+                                                {/* Retrieved Data */}
+                                                <div className="space-y-6">
+                                                    {currentMail.agent_logs?.threeRpmsData ? (
+                                                        <motion.div 
+                                                            initial={{ opacity: 0, x: 20 }}
+                                                            animate={{ opacity: 1, x: 0 }}
+                                                            className="bg-white border-l-4 border-[#009697] p-5 shadow-sm"
+                                                        >
+                                                            <div className="text-[9px] font-black text-[#009697] uppercase tracking-widest mb-3">Live-Daten gefunden</div>
+                                                            <div className="space-y-3">
+                                                                <div>
+                                                                    <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Gast / Reservierung</div>
+                                                                    <div className="text-[13px] font-bold text-[#444444]">
+                                                                        {currentMail.agent_logs.threeRpmsData.first_guest?.lastname || "Unbekannt"}
+                                                                        <span className="ml-2 px-1.5 py-0.5 bg-[#444444] text-white text-[9px] font-black uppercase tracking-widest">{currentMail.agent_logs.threeRpmsData.reservation?.code || "No Code"}</span>
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex gap-4">
+                                                                    <div>
+                                                                        <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Anreise</div>
+                                                                        <div className="text-[11px] font-bold">{currentMail.agent_logs.threeRpmsData.reservation_from || "--"}</div>
+                                                                    </div>
+                                                                    <div>
+                                                                        <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Abreise</div>
+                                                                        <div className="text-[11px] font-bold">{currentMail.agent_logs.threeRpmsData.reservation_to || "--"}</div>
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Status</div>
+                                                                    <div className="text-[11px] font-bold px-2 py-0.5 bg-green-50 text-green-700 inline-block border border-green-200">
+                                                                        {currentMail.agent_logs.threeRpmsData.status || "Aktive Buchung"}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </motion.div>
+                                                    ) : (
+                                                        <div className="p-10 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
+                                                            <Database className="w-8 h-8 text-black/5" />
+                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest">Keine ERP-Daten</div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Planned Action */}
+                                                    {currentMail.agent_logs?.actionData?.graphql_mutation && currentMail.agent_logs.actionData.graphql_mutation !== "none" && (
+                                                        <div className="bg-[#444444] p-5 text-white shadow-lg">
+                                                            <div className="text-[9px] font-black text-[#F39200] uppercase tracking-widest mb-3">Geplante Aktion</div>
+                                                            <div className="space-y-4">
+                                                                <div className="text-[12px] font-bold italic leading-tight">{currentMail.api_action}</div>
+                                                                <div className="text-[8px] font-mono opacity-50 uppercase tracking-widest">Aktion wird erst nach Klick auf &quot;Bestätigen&quot; ausgeführt</div>
+                                                            </div>
+                                                        </div>
                                                     )}
                                                 </div>
                                             </div>

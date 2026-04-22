@@ -125,8 +125,9 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
     const handleUpdateHotel = async (hotel: string) => {
         if (!currentMail) return;
         try {
-            // Update intent to null to trigger re-analysis by the backend
+            // Update to 'new' and intent to null to trigger immediate re-analysis by the backend
             await supabase.from("emails").update({ 
+                status: "new",
                 intent: null,
                 agent_logs: { ...currentMail.agent_logs, target_hotel: hotel, ai_force_hotel: hotel }
             }).eq("id", currentMail.id);
@@ -349,7 +350,11 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                     ) : (
                                                         <div className="p-10 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
                                                             <Database className="w-8 h-8 text-black/5" />
-                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest underline decoration-[#E2001A]">Hotel-Zuordnung oben erforderlich</div>
+                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest underline decoration-[#E2001A]">
+                                                                {currentMail.status === "new" && currentMail.agent_logs?.target_hotel 
+                                                                    ? "Petulia analysiert jetzt..." 
+                                                                    : "Hotel-Zuordnung oben erforderlich"}
+                                                            </div>
                                                         </div>
                                                     )}
 

@@ -29,21 +29,13 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 function AgentStatusHeader({ step, currentMail, onUpdateHotel }: { step: number, currentMail: Email, onUpdateHotel: (h: string) => void }) {
     const hotelName = currentMail.agent_logs?.target_hotel || "UNKLAR";
-    const erpDesc = hotelName === "UNKLAR" ? "Hotel unklar" : `Prüfe ${hotelName}`;
+    const erpDesc = hotelName === "UNKLAR" ? "Identifikation..." : `Prüfung läuft`;
     
     const agents = [
         { name: "PRÜFUNG", desc: currentMail.intent || "Eingang...", icon: BrainCircuit },
         { name: "HOTEL-SYSTEM", desc: erpDesc, icon: Database },
         { name: "WISSEN", desc: "Regeln geladen", icon: Terminal },
         { name: "VORBEREITUNG", desc: "Entwurf fertig", icon: PenTool },
-    ];
-
-    const hotelOptions = [
-        "Hotel Petul \"An der Zeche\"",
-        "Hotel Apart \"An'ne 40\"",
-        "Hotel Apart \"Residenz\"",
-        "Hotel Apart \"Am Ruhrbogen\"",
-        "Art Hotel Brunnen"
     ];
 
     return (
@@ -60,24 +52,46 @@ function AgentStatusHeader({ step, currentMail, onUpdateHotel }: { step: number,
                             <Icon className={`w-4 h-4 ${isActive ? 'animate-pulse' : ''}`} />
                             <div className="flex flex-col min-w-0">
                                 <span className="text-[9px] font-black uppercase tracking-widest leading-tight truncate">{agent.name}</span>
-                                {agent.name === "HOTEL-SYSTEM" && hotelName === "UNKLAR" ? (
-                                    <select 
-                                        className="bg-white text-black text-[10px] font-black uppercase tracking-tighter px-2 py-1 mt-1 border-0 rounded-none cursor-pointer outline-none ring-2 ring-[#E2001A]/20"
-                                        onChange={(e) => onUpdateHotel(e.target.value)}
-                                        value=""
-                                    >
-                                        <option value="" disabled>BITTE WÄHLEN...</option>
-                                        {hotelOptions.map(opt => <option key={opt} value={opt}>{opt.toUpperCase()}</option>)}
-                                    </select>
-                                ) : (
-                                    <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
-                                )}
+                                <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
                             </div>
                         </div>
                         {isDone && !isWarning && <CheckCircle2 className="absolute top-1 right-1 w-3 h-3 text-white/50" />}
                     </div>
                 )
             })}
+        </div>
+    );
+}
+
+function HotelSelectorHeader({ hotelName, onUpdateHotel }: { hotelName: string, onUpdateHotel: (h: string) => void }) {
+    const hotelOptions = [
+        "Hotel Petul \"An der Zeche\"",
+        "Hotel Apart \"An'ne 40\"",
+        "Hotel Apart \"Residenz\"",
+        "Hotel Apart \"Am Ruhrbogen\"",
+        "Art Hotel Brunnen"
+    ];
+
+    const isUnclear = !hotelName || hotelName === "UNKLAR";
+
+    return (
+        <div className="flex items-center gap-4">
+            <div className="flex flex-col">
+                <span className="text-[10px] font-black text-black/30 uppercase tracking-[0.2em] mb-1">Ziel-Etablissement</span>
+                <div className="relative group">
+                    <select 
+                        className={`appearance-none bg-white border-2 px-4 py-2 text-[11px] font-bold uppercase tracking-widest cursor-pointer outline-none transition-all ${isUnclear ? 'border-[#E2001A] text-[#E2001A] shadow-[4px_4px_0px_0px_rgba(226,0,26,0.1)] animate-pulse' : 'border-black text-black hover:bg-black hover:text-white'}`}
+                        value={isUnclear ? "" : hotelName}
+                        onChange={(e) => onUpdateHotel(e.target.value)}
+                    >
+                        <option value="" disabled>{isUnclear ? "HOTEL JETZT WÄHLEN ↓" : hotelName}</option>
+                        {hotelOptions.map(opt => (
+                            <option key={opt} value={opt} className="text-black bg-white">{opt.toUpperCase()}</option>
+                        ))}
+                    </select>
+                </div>
+            </div>
+            <div className="h-10 w-[1px] bg-black/10 mx-2" />
         </div>
     );
 }
@@ -188,11 +202,14 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                     <div className="flex-1 flex flex-col overflow-hidden">
                                         {/* HEADER BAR */}
                                         <div className="flex items-center justify-between px-10 py-6 border-b border-black/10 bg-white">
-                                            <div className="flex items-center gap-6">
-                                                <div className="px-4 py-2 border border-black/10 bg-[#F2F2F2] text-[12px] font-bold uppercase tracking-widest">
-                                                    {currentMail.agent_logs?.target_hotel || "HAUPTHAUS"}
+                                            <div className="flex items-center gap-8">
+                                                <HotelSelectorHeader 
+                                                    hotelName={currentMail?.agent_logs?.target_hotel || ""} 
+                                                    onUpdateHotel={handleUpdateHotel} 
+                                                />
+                                                <div className="hidden lg:block text-[12px] font-black uppercase tracking-[0.3em] text-[#6082B6] opacity-30">
+                                                    Decision Hub
                                                 </div>
-                                                <div className="text-[12px] font-bold uppercase tracking-widest text-[#6082B6]">Petulia Decision Hub</div>
                                             </div>
                                             <button className="hover:rotate-90 transition-transform duration-500 text-[#444444]" title="Bildschirmschoner" onClick={() => setIsMinimized(true)}>
                                                 <Minimize2 className="w-6 h-6" />

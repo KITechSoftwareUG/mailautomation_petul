@@ -27,7 +27,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: Email }) {
+function AgentStatusHeader({ step, currentMail, onUpdateHotel }: { step: number, currentMail: Email, onUpdateHotel: (h: string) => void }) {
     const hotelName = currentMail.agent_logs?.target_hotel || "UNKLAR";
     const erpDesc = hotelName === "UNKLAR" ? "Hotel unklar" : `Prüfe ${hotelName}`;
     
@@ -36,6 +36,14 @@ function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: E
         { name: "HOTEL-SYSTEM", desc: erpDesc, icon: Database },
         { name: "WISSEN", desc: "Regeln geladen", icon: Terminal },
         { name: "VORBEREITUNG", desc: "Entwurf fertig", icon: PenTool },
+    ];
+
+    const hotelOptions = [
+        "Hotel Petul \"An der Zeche\"",
+        "Hotel Apart \"An'ne 40\"",
+        "Hotel Apart \"Residenz\"",
+        "Hotel Apart \"Am Ruhrbogen\"",
+        "Art Hotel Brunnen"
     ];
 
     return (
@@ -52,7 +60,18 @@ function AgentStatusHeader({ step, currentMail }: { step: number, currentMail: E
                             <Icon className={`w-4 h-4 ${isActive ? 'animate-pulse' : ''}`} />
                             <div className="flex flex-col min-w-0">
                                 <span className="text-[9px] font-black uppercase tracking-widest leading-tight truncate">{agent.name}</span>
-                                <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
+                                {agent.name === "HOTEL-SYSTEM" && hotelName === "UNKLAR" ? (
+                                    <select 
+                                        className="bg-transparent text-[11px] font-bold border-b border-black/20 outline-none cursor-pointer"
+                                        onChange={(e) => onUpdateHotel(e.target.value)}
+                                        value=""
+                                    >
+                                        <option value="" disabled>Wählen...</option>
+                                        {hotelOptions.map(opt => <option key={opt} value={opt} className="text-black">{opt}</option>)}
+                                    </select>
+                                ) : (
+                                    <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
+                                )}
                             </div>
                         </div>
                         {isDone && !isWarning && <CheckCircle2 className="absolute top-1 right-1 w-3 h-3 text-white/50" />}
@@ -88,6 +107,20 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
             return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); };
         }
     }, [selectedId, currentMail?.draft_reply]);
+
+    const handleUpdateHotel = async (hotel: string) => {
+        if (!currentMail) return;
+        try {
+            // Update intent to null to trigger re-analysis by the backend
+            await supabase.from("emails").update({ 
+                intent: null,
+                agent_logs: { ...currentMail.agent_logs, target_hotel: hotel, ai_force_hotel: hotel }
+            }).eq("id", currentMail.id);
+            router.refresh();
+        } catch (err) {
+            console.error("Hotel Update Fehler:", err);
+        }
+    };
 
     const handleAction = async (status: "completed" | "rejected") => {
         if (!currentMail) return;
@@ -201,7 +234,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
 
                                             {/* CENTER: RESOLUTION */}
                                             <div className="col-span-5 flex flex-col p-8 bg-white overflow-hidden border-r border-black/10">
-                                                <AgentStatusHeader step={step} currentMail={currentMail} />
+                                                <AgentStatusHeader step={step} currentMail={currentMail} onUpdateHotel={handleUpdateHotel} />
                                                 
                                                 <div className="flex-1 flex flex-col min-h-0">
                                                     <div className="flex items-center justify-between mb-4">
@@ -297,9 +330,23 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                             </div>
                                                         </motion.div>
                                                     ) : (
-                                                        <div className="p-10 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
+                                                        <div className="p-8 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
                                                             <Database className="w-8 h-8 text-black/5" />
-                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest">Keine ERP-Daten</div>
+                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest mb-4">Hotelzuordnung erforderlich</div>
+                                                            <select 
+                                                                className="w-full p-3 bg-white border border-black/10 text-[11px] font-bold outline-none cursor-pointer hover:border-[#6082B6] transition-colors"
+                                                                onChange={(e) => handleUpdateHotel(e.target.value)}
+                                                                value=""
+                                                            >
+                                                                <option value="" disabled>Hotel manuell wählen...</option>
+                                                                {[
+                                                                    "Hotel Petul \"An der Zeche\"",
+                                                                    "Hotel Apart \"An'ne 40\"",
+                                                                    "Hotel Apart \"Residenz\"",
+                                                                    "Hotel Apart \"Am Ruhrbogen\"",
+                                                                    "Art Hotel Brunnen"
+                                                                ].map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                                            </select>
                                                         </div>
                                                     )}
 

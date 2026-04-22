@@ -62,12 +62,12 @@ function AgentStatusHeader({ step, currentMail, onUpdateHotel }: { step: number,
                                 <span className="text-[9px] font-black uppercase tracking-widest leading-tight truncate">{agent.name}</span>
                                 {agent.name === "HOTEL-SYSTEM" && hotelName === "UNKLAR" ? (
                                     <select 
-                                        className="bg-transparent text-[11px] font-bold border-b border-black/20 outline-none cursor-pointer"
+                                        className="bg-white text-black text-[10px] font-black uppercase tracking-tighter px-2 py-1 mt-1 border-0 rounded-none cursor-pointer outline-none ring-2 ring-[#E2001A]/20"
                                         onChange={(e) => onUpdateHotel(e.target.value)}
                                         value=""
                                     >
-                                        <option value="" disabled>Wählen...</option>
-                                        {hotelOptions.map(opt => <option key={opt} value={opt} className="text-black">{opt}</option>)}
+                                        <option value="" disabled>BITTE WÄHLEN...</option>
+                                        {hotelOptions.map(opt => <option key={opt} value={opt}>{opt.toUpperCase()}</option>)}
                                     </select>
                                 ) : (
                                     <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
@@ -330,23 +330,9 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                             </div>
                                                         </motion.div>
                                                     ) : (
-                                                        <div className="p-8 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
+                                                        <div className="p-10 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
                                                             <Database className="w-8 h-8 text-black/5" />
-                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest mb-4">Hotelzuordnung erforderlich</div>
-                                                            <select 
-                                                                className="w-full p-3 bg-white border border-black/10 text-[11px] font-bold outline-none cursor-pointer hover:border-[#6082B6] transition-colors"
-                                                                onChange={(e) => handleUpdateHotel(e.target.value)}
-                                                                value=""
-                                                            >
-                                                                <option value="" disabled>Hotel manuell wählen...</option>
-                                                                {[
-                                                                    "Hotel Petul \"An der Zeche\"",
-                                                                    "Hotel Apart \"An'ne 40\"",
-                                                                    "Hotel Apart \"Residenz\"",
-                                                                    "Hotel Apart \"Am Ruhrbogen\"",
-                                                                    "Art Hotel Brunnen"
-                                                                ].map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                                            </select>
+                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest underline decoration-[#E2001A]">Hotel-Zuordnung oben erforderlich</div>
                                                         </div>
                                                     )}
 

@@ -392,7 +392,7 @@ async function processOutbound() {
 
         for (const mail of approvedMails || []) {
             try {
-                const recipientEmail = mail.senders?.[0]?.email;
+                const recipientEmail = (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email;
                 if (!recipientEmail) continue;
 
                 await transporter.sendMail({
@@ -411,8 +411,38 @@ async function processOutbound() {
     } catch (err: any) {}
 }
 
+/**
+ * Watcher: Checks for emails with status 'new' (e.g. manually reset in dashboard)
+ * and processes them immediately.
+ */
+async function watchNewMails() {
+    try {
+        const { data: newMails, error } = await supabase
+            .from("emails")
+            .select("*, senders!inner(email, name)")
+            .eq("status", "new")
+            .limit(5);
+
+        if (error || !newMails || newMails.length === 0) return;
+
+        for (const mail of newMails) {
+            console.log(`🔄 Watcher: Manuell getriggerte Analyse für ${mail.mail_id}`);
+            const mailData = {
+                mail_id: mail.mail_id,
+                betreff: mail.betreff,
+                body_text: mail.body_text,
+                absender: (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email || "system",
+                empfaenger: mail.empfaenger || "info@petul.de",
+                forward_target: mail.forward_target || ""
+            };
+            await runAiPipeline(mailData, mail.thread_id);
+        }
+    } catch (err) {}
+}
+
 // Initial Run
 recoverPendingMails().then(() => {
     setInterval(processOutbound, 10000);
+    setInterval(watchNewMails, 5000); // Check every 5 seconds for manual interventions
     startListener().catch(console.error);
 });

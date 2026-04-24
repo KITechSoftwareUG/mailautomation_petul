@@ -107,7 +107,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
     const currentMail = emails.find(e => e.id === selectedId);
 
     useEffect(() => {
-        const interval = setInterval(() => router.refresh(), 10000);
+        const interval = setInterval(() => router.refresh(), 30000);
         return () => clearInterval(interval);
     }, [router]);
 

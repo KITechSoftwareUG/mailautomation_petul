@@ -11,3 +11,4 @@ logs
 .github
 mcp.json
 package-lock.json
+.vercel

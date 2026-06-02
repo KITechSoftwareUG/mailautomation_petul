@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { 
-    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool, Database, MessageSquare
+import {
+    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -99,12 +99,44 @@ function HotelSelectorHeader({ hotelName, onUpdateHotel }: { hotelName: string, 
 export function EmailFeed({ emails }: { emails: Email[] }) {
     const router = useRouter();
     const [selectedId, setSelectedId] = useState<string | null>(emails.find(e => e.status === 'processing')?.id || emails[0]?.id || null);
-    const [actionStatus, setActionStatus] = useState<"idle" | "sending" | "rejecting">("idle");
+    const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting">("idle");
     const [isMinimized, setIsMinimized] = useState(false);
     const [step, setStep] = useState(0);
+    const [editedDraft, setEditedDraft] = useState<string>("");
+    const [copied, setCopied] = useState(false);
+    const notifiedIds = useRef<Set<string>>(new Set(emails.map(e => e.id)));
 
     const pendingCount = emails.filter(e => e.status === "processing").length;
     const currentMail = emails.find(e => e.id === selectedId);
+
+    // Notification permission beim ersten Render anfragen
+    useEffect(() => {
+        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+            Notification.requestPermission();
+        }
+    }, []);
+
+    // Neue "processing" Mails benachrichtigen (nur wirklich neue, nicht beim initialen Load)
+    useEffect(() => {
+        const processingEmails = emails.filter(e => e.status === "processing");
+        for (const email of processingEmails) {
+            if (!notifiedIds.current.has(email.id)) {
+                notifiedIds.current.add(email.id);
+                if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                    new Notification("Neue E-Mail — Petulia", {
+                        body: email.betreff || "Neue eingehende E-Mail",
+                        icon: "/favicon.ico",
+                    });
+                }
+            }
+        }
+    }, [emails]);
+
+    // Draft-State bei Mail-Wechsel neu setzen
+    useEffect(() => {
+        setEditedDraft(currentMail?.draft_reply || "");
+        setCopied(false);
+    }, [selectedId, currentMail?.draft_reply]);
 
     useEffect(() => {
         const interval = setInterval(() => router.refresh(), 30000);
@@ -137,11 +169,22 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
         }
     };
 
-    const handleAction = async (status: "completed" | "rejected") => {
+    const handleCopy = async () => {
+        if (!editedDraft) return;
+        await navigator.clipboard.writeText(editedDraft);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    const handleAction = async (action: "approve" | "reject") => {
         if (!currentMail) return;
-        setActionStatus(status === "completed" ? "sending" : "rejecting");
+        setActionStatus(action === "approve" ? "approving" : "rejecting");
         try {
-            await supabase.from("emails").update({ status }).eq("id", currentMail.id);
+            if (action === "approve") {
+                await supabase.from("emails").update({ draft_reply: editedDraft, status: "approved" }).eq("id", currentMail.id);
+            } else {
+                await supabase.from("emails").update({ status: "rejected" }).eq("id", currentMail.id);
+            }
             await new Promise(resolve => setTimeout(resolve, 800));
             router.refresh();
         } finally {
@@ -257,27 +300,42 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                 <div className="flex-1 flex flex-col min-h-0">
                                                     <div className="flex items-center justify-between mb-4">
                                                         <span className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#6082B6]">Antwort-Entwurf:</span>
-                                                        <div className="px-3 py-1 bg-[#6082B6]/10 text-[#6082B6] text-[9px] font-black uppercase rounded-none">Vorschlag</div>
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                onClick={handleCopy}
+                                                                disabled={!editedDraft || step < 4}
+                                                                title="In Zwischenablage kopieren"
+                                                                className="flex items-center gap-1.5 px-3 py-1 border border-black/10 hover:bg-black hover:text-white text-black/40 text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-20"
+                                                            >
+                                                                {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                                                                {copied ? "KOPIERT" : "KOPIEREN"}
+                                                            </button>
+                                                            <div className="px-3 py-1 bg-[#6082B6]/10 text-[#6082B6] text-[9px] font-black uppercase rounded-none">Bearbeitbar</div>
+                                                        </div>
                                                     </div>
-                                                    
-                                                    <motion.div 
+
+                                                    <motion.div
                                                         initial={{ opacity: 0, y: 30 }}
                                                         animate={{ opacity: step >= 4 ? 1 : 0.05, y: step >= 4 ? 0 : 10 }}
-                                                        className="flex-1 p-8 border border-black/10 bg-white text-black overflow-y-auto custom-scrollbar shadow-inner rounded-none"
+                                                        className="flex-1 flex flex-col min-h-0"
                                                     >
-                                                        <div className="text-[16px] lg:text-[17px] font-medium leading-relaxed whitespace-pre-wrap tracking-wide font-sans selection:bg-[#6082B6] selection:text-white h-full">
-                                                            {currentMail.status === "ignored" || currentMail.intent === "Spam/Irrelevant" ? (
-                                                                <div className="flex flex-col items-center justify-center text-[#E2001A] gap-4 py-12">
-                                                                    <div className="w-16 h-16 border-2 border-[#E2001A] flex items-center justify-center font-bold text-3xl rounded-none">!</div>
-                                                                    <div className="text-lg font-bold uppercase tracking-widest text-center leading-tight">
-                                                                        SPAM / IRRELEVANT<br/>
-                                                                        <span className="text-[10px] font-medium opacity-60 tracking-normal capitalize">Nachricht als nicht relevant eingestuft.</span>
-                                                                    </div>
+                                                        {currentMail.status === "ignored" || currentMail.intent === "Spam/Irrelevant" ? (
+                                                            <div className="flex-1 flex flex-col items-center justify-center text-[#E2001A] gap-4 py-12 border border-black/10 bg-white">
+                                                                <div className="w-16 h-16 border-2 border-[#E2001A] flex items-center justify-center font-bold text-3xl rounded-none">!</div>
+                                                                <div className="text-lg font-bold uppercase tracking-widest text-center leading-tight">
+                                                                    SPAM / IRRELEVANT<br/>
+                                                                    <span className="text-[10px] font-medium opacity-60 tracking-normal capitalize">Nachricht als nicht relevant eingestuft.</span>
                                                                 </div>
-                                                            ) : (
-                                                                currentMail.draft_reply || "Petulia erstellt Antwortvorschlag..."
-                                                            )}
-                                                        </div>
+                                                            </div>
+                                                        ) : (
+                                                            <textarea
+                                                                value={editedDraft}
+                                                                onChange={(e) => setEditedDraft(e.target.value)}
+                                                                disabled={step < 4 || currentMail.status !== "processing"}
+                                                                placeholder="Petulia erstellt Antwortvorschlag..."
+                                                                className="flex-1 w-full p-8 border border-black/10 bg-white text-black resize-none outline-none shadow-inner font-sans text-[16px] lg:text-[17px] font-medium leading-relaxed tracking-wide selection:bg-[#6082B6] selection:text-white disabled:cursor-default custom-scrollbar"
+                                                            />
+                                                        )}
                                                     </motion.div>
 
                                                     {/* MASTER APPROVAL ACTION */}
@@ -287,15 +345,15 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                             animate={{ opacity: step >= 4 ? 1 : 0, scale: step >= 4 ? 1 : 0.95 }}
                                                             className="mt-8 flex gap-4 h-20 shrink-0"
                                                         >
-                                                            <button 
-                                                                onClick={() => handleAction("completed")} disabled={actionStatus !== "idle" || step < 4}
+                                                            <button
+                                                                onClick={() => handleAction("approve")} disabled={actionStatus !== "idle" || step < 4}
                                                                 className="flex-[3] bg-[#6082B6] text-white hover:bg-[#444444] border-0 rounded-none transition-all text-lg font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-4 group disabled:opacity-30 active:translate-y-1 shadow-lg"
                                                             >
-                                                                BESTÄTIGEN
+                                                                {actionStatus === "approving" ? "WIRD VERARBEITET..." : "BESTÄTIGEN & AUSFÜHREN"}
                                                                 <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
                                                             </button>
-                                                            <button 
-                                                                onClick={() => handleAction("rejected")} disabled={actionStatus !== "idle"}
+                                                            <button
+                                                                onClick={() => handleAction("reject")} disabled={actionStatus !== "idle"}
                                                                 className="flex-1 border border-black/10 bg-white hover:bg-[#E2001A] hover:text-white rounded-none transition-all text-[10px] font-bold uppercase tracking-widest flex items-center justify-center text-black/40 hover:opacity-100 shadow-sm"
                                                             >
                                                                 ABLEHNEN
@@ -351,9 +409,11 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                         <div className="p-10 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
                                                             <Database className="w-8 h-8 text-black/5" />
                                                             <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest underline decoration-[#E2001A]">
-                                                                {currentMail.status === "new" && currentMail.agent_logs?.target_hotel 
-                                                                    ? "Petulia analysiert jetzt..." 
-                                                                    : "Hotel-Zuordnung oben erforderlich"}
+                                                                {currentMail.status === "new"
+                                                                    ? "Petulia analysiert jetzt..."
+                                                                    : (currentMail.agent_logs?.target_hotel && currentMail.agent_logs.target_hotel !== "UNKLAR"
+                                                                        ? "Keine PMS-Daten für dieses Hotel gefunden"
+                                                                        : "Hotel-Zuordnung oben erforderlich")}
                                                             </div>
                                                         </div>
                                                     )}

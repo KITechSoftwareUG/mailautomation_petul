@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check, Sparkles
+    ArrowRight, Minimize2, Layers, CheckCircle2, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check, ChevronRight, Sparkles
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -27,98 +27,108 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-function AgentStatusHeader({ step, currentMail, onUpdateHotel }: { step: number, currentMail: Email, onUpdateHotel: (h: string) => void }) {
+// Schlanker horizontaler Agent-Fortschritts-Indikator für den Header
+function AgentProgressSlim({ step, currentMail }: { step: number; currentMail: Email }) {
     const hotelName = currentMail.agent_logs?.target_hotel || "UNKLAR";
-    const erpDesc = hotelName === "UNKLAR" ? "Identifikation..." : `Prüfung läuft`;
-    
-    const agents = [
-        { name: "PRÜFUNG", desc: currentMail.intent || "Eingang...", icon: BrainCircuit },
-        { name: "HOTEL-SYSTEM", desc: erpDesc, icon: Database },
-        { name: "WISSEN", desc: "Regeln geladen", icon: Terminal },
-        { name: "VORBEREITUNG", desc: "Entwurf fertig", icon: PenTool },
+
+    const stages = [
+        { name: "PRÜFUNG", icon: BrainCircuit, warning: false },
+        { name: "HOTEL", icon: Database, warning: hotelName === "UNKLAR" },
+        { name: "WISSEN", icon: Terminal, warning: false },
+        { name: "ENTWURF", icon: PenTool, warning: false },
     ];
 
     return (
-        <div className="grid grid-cols-4 gap-4 mb-10">
-            {agents.map((agent, idx) => {
-                const isActive = step === idx;
+        <div className="flex items-center gap-1.5">
+            {stages.map((stage, idx) => {
                 const isDone = step > idx;
-                const Icon = agent.icon;
-                const isWarning = agent.name === "HOTEL-SYSTEM" && hotelName === "UNKLAR" && (isActive || isDone);
+                const isActive = step === idx;
+                const Icon = stage.icon;
+                const isWarning = stage.warning && (isActive || isDone);
+
+                let colorClass = "text-black/15";
+                if (isWarning) colorClass = "text-[#E2001A]";
+                else if (isDone) colorClass = "text-[#009697]";
+                else if (isActive) colorClass = "text-[#6082B6]";
 
                 return (
-                    <div key={idx} className={`relative p-3 border-2 rounded-none transition-all duration-500 ${isDone ? 'bg-[#444444] border-[#444444] text-white' : isActive ? 'bg-[#6082B6] border-[#6082B6] text-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]' : 'bg-white border-black/10 text-black/20'} ${isWarning ? 'border-[#E2001A] !text-[#E2001A]' : ''}`}>
-                        <div className="flex items-center gap-3">
-                            <Icon className={`w-4 h-4 ${isActive ? 'animate-pulse' : ''}`} />
-                            <div className="flex flex-col min-w-0">
-                                <span className="text-[9px] font-black uppercase tracking-widest leading-tight truncate">{agent.name}</span>
-                                <span className={`text-[11px] font-bold truncate ${isActive || isDone ? 'opacity-100' : 'opacity-0'}`}>{agent.desc}</span>
-                            </div>
+                    <div key={idx} className="flex items-center gap-1">
+                        <div className={`flex items-center gap-1 transition-all duration-300 ${colorClass}`}>
+                            {isDone && !isWarning ? (
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                            ) : (
+                                <Icon className={`w-3.5 h-3.5 ${isActive ? "animate-pulse" : ""}`} />
+                            )}
+                            <span className="text-[8px] font-black uppercase tracking-widest hidden xl:inline">{stage.name}</span>
                         </div>
-                        {isDone && !isWarning && <CheckCircle2 className="absolute top-1 right-1 w-3 h-3 text-white/50" />}
+                        {idx < stages.length - 1 && (
+                            <div className={`w-3 h-px mx-0.5 transition-all duration-300 ${isDone ? "bg-[#009697]" : "bg-black/10"}`} />
+                        )}
                     </div>
-                )
+                );
             })}
         </div>
     );
 }
 
-function HotelSelectorHeader({ hotelName, onUpdateHotel }: { hotelName: string, onUpdateHotel: (h: string) => void }) {
+function HotelSelectorHeader({ hotelName, onUpdateHotel }: { hotelName: string; onUpdateHotel: (h: string) => void }) {
     const hotelOptions = [
         "Hotel Petul \"An der Zeche\"",
         "Hotel Apart \"An'ne 40\"",
         "Hotel Apart \"Residenz\"",
         "Hotel Apart \"Am Ruhrbogen\"",
-        "Art Hotel Brunnen"
+        "Art Hotel Brunnen",
     ];
 
     const isUnclear = !hotelName || hotelName === "UNKLAR";
 
     return (
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
             <div className="flex flex-col">
-                <span className="text-[10px] font-black text-black/30 uppercase tracking-[0.2em] mb-1">Ziel-Etablissement</span>
-                <div className="relative group">
-                    <select 
-                        className={`appearance-none bg-white border-2 px-4 py-2 text-[11px] font-bold uppercase tracking-widest cursor-pointer outline-none transition-all ${isUnclear ? 'border-[#E2001A] text-[#E2001A] shadow-[4px_4px_0px_0px_rgba(226,0,26,0.1)] animate-pulse' : 'border-black text-black hover:bg-black hover:text-white'}`}
-                        value={isUnclear ? "" : hotelName}
-                        onChange={(e) => onUpdateHotel(e.target.value)}
-                    >
-                        <option value="" disabled>{isUnclear ? "HOTEL JETZT WÄHLEN ↓" : hotelName}</option>
-                        {hotelOptions.map(opt => (
-                            <option key={opt} value={opt} className="text-black bg-white">{opt.toUpperCase()}</option>
-                        ))}
-                    </select>
-                </div>
+                <span className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em] mb-1">Ziel-Etablissement</span>
+                <select
+                    className={`appearance-none bg-white border-2 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest cursor-pointer outline-none transition-all ${
+                        isUnclear
+                            ? "border-[#E2001A] text-[#E2001A] shadow-[3px_3px_0px_0px_rgba(226,0,26,0.1)] animate-pulse"
+                            : "border-black text-black hover:bg-black hover:text-white"
+                    }`}
+                    value={isUnclear ? "" : hotelName}
+                    onChange={(e) => onUpdateHotel(e.target.value)}
+                >
+                    <option value="" disabled>{isUnclear ? "HOTEL JETZT WÄHLEN ↓" : hotelName}</option>
+                    {hotelOptions.map((opt) => (
+                        <option key={opt} value={opt} className="text-black bg-white">{opt.toUpperCase()}</option>
+                    ))}
+                </select>
             </div>
-            <div className="h-10 w-[1px] bg-black/10 mx-2" />
+            <div className="h-8 w-px bg-black/10" />
         </div>
     );
 }
 
 export function EmailFeed({ emails }: { emails: Email[] }) {
     const router = useRouter();
-    const [selectedId, setSelectedId] = useState<string | null>(emails.find(e => e.status === 'processing')?.id || emails[0]?.id || null);
+    const [selectedId, setSelectedId] = useState<string | null>(
+        emails.find((e) => e.status === "processing")?.id || emails[0]?.id || null
+    );
     const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting">("idle");
     const [isMinimized, setIsMinimized] = useState(false);
     const [step, setStep] = useState(0);
     const [editedDraft, setEditedDraft] = useState<string>("");
     const [copied, setCopied] = useState(false);
-    const notifiedIds = useRef<Set<string>>(new Set(emails.map(e => e.id)));
+    const notifiedIds = useRef<Set<string>>(new Set(emails.map((e) => e.id)));
 
-    const pendingCount = emails.filter(e => e.status === "processing").length;
-    const currentMail = emails.find(e => e.id === selectedId);
+    const pendingCount = emails.filter((e) => e.status === "processing").length;
+    const currentMail = emails.find((e) => e.id === selectedId);
 
-    // Notification permission beim ersten Render anfragen
     useEffect(() => {
         if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
             Notification.requestPermission();
         }
     }, []);
 
-    // Neue "processing" Mails benachrichtigen (nur wirklich neue, nicht beim initialen Load)
     useEffect(() => {
-        const processingEmails = emails.filter(e => e.status === "processing");
+        const processingEmails = emails.filter((e) => e.status === "processing");
         for (const email of processingEmails) {
             if (!notifiedIds.current.has(email.id)) {
                 notifiedIds.current.add(email.id);
@@ -132,7 +142,6 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
         }
     }, [emails]);
 
-    // Draft-State bei Mail-Wechsel neu setzen
     useEffect(() => {
         setEditedDraft(currentMail?.draft_reply || "");
         setCopied(false);
@@ -157,11 +166,10 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
     const handleUpdateHotel = async (hotel: string) => {
         if (!currentMail) return;
         try {
-            // Update to 'new' and intent to null to trigger immediate re-analysis by the backend
-            await supabase.from("emails").update({ 
+            await supabase.from("emails").update({
                 status: "new",
                 intent: null,
-                agent_logs: { ...currentMail.agent_logs, target_hotel: hotel, ai_force_hotel: hotel }
+                agent_logs: { ...currentMail.agent_logs, target_hotel: hotel, ai_force_hotel: hotel },
             }).eq("id", currentMail.id);
             router.refresh();
         } catch (err) {
@@ -185,7 +193,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
             } else {
                 await supabase.from("emails").update({ status: "rejected" }).eq("id", currentMail.id);
             }
-            await new Promise(resolve => setTimeout(resolve, 800));
+            await new Promise((resolve) => setTimeout(resolve, 800));
             router.refresh();
         } finally {
             setActionStatus("idle");
@@ -193,282 +201,359 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
     };
 
     return (
-        <div className="relative w-full h-screen overflow-hidden flex bg-[#F9F9F9] text-black tracking-tight selection:bg-[#6082B6] selection:text-white font-sans">
-            
-            <div className="flex-1 flex items-center justify-center p-6 lg:p-10 relative z-40 transition-all duration-700">
-                <AnimatePresence mode="wait">
-                    {!isMinimized ? (
-                        <motion.div 
-                            key="expanded-focus-mode"
-                            initial={{ opacity: 0, scale: 1 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 1 }}
-                            className="w-full max-w-screen-2xl h-[94vh] flex bg-white border-2 border-black/10 shadow-[40px_40px_80px_0px_rgba(0,0,0,0.1)] rounded-none overflow-hidden"
-                        >
-                            {/* LEFT SIDEBAR: PENDING */}
-                            <div className="w-80 border-r border-black/10 flex flex-col bg-[#444444] text-white">
-                                <div className="p-8 pb-4 bg-[#444444]">
-                                    <div className="flex flex-col mb-4">
-                                        <h1 className="text-3xl font-serif tracking-widest leading-none mb-1">APART HOTELS</h1>
-                                        <span className="text-2xl font-light italic lowercase opacity-80" style={{ fontFamily: 'serif' }}>petul</span>
-                                    </div>
-                                    
-                                    {/* Brand Spectrum Bar */}
-                                    <div className="flex h-1 w-full mb-6">
-                                        <div className="flex-1 bg-[#E2001A]" />
-                                        <div className="flex-1 bg-[#F39200]" />
-                                        <div className="flex-1 bg-[#009697]" />
-                                        <div className="flex-1 bg-[#6082B6]" />
-                                    </div>
-
-                                    <div className="text-[10px] font-bold text-[#F39200] uppercase tracking-widest flex items-center gap-2">
-                                        <div className="w-1.5 h-1.5 bg-[#F39200] rounded-full animate-pulse" />
-                                        {pendingCount} POSTEINGÄNGE
-                                    </div>
+        <div className="relative w-full h-screen overflow-hidden bg-[#F9F9F9] text-black tracking-tight selection:bg-[#6082B6] selection:text-white font-sans">
+            <AnimatePresence mode="wait">
+                {!isMinimized ? (
+                    <motion.div
+                        key="expanded"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="absolute inset-0 flex bg-white overflow-hidden"
+                    >
+                        {/* ── LINKE SIDEBAR: KOMPAKTE E-MAIL-LISTE ── */}
+                        <div className="w-52 shrink-0 border-r border-black/10 flex flex-col bg-[#444444] text-white">
+                            <div className="px-5 pt-5 pb-4">
+                                <div className="flex flex-col mb-3">
+                                    <h1 className="text-[16px] font-serif tracking-widest leading-none mb-0.5 uppercase">Apart Hotels</h1>
+                                    <span className="text-[14px] font-light italic lowercase opacity-70" style={{ fontFamily: "serif" }}>petul</span>
                                 </div>
-                                <div className="flex-1 overflow-y-auto custom-scrollbar px-4">
-                                    {emails.slice(0, 30).map(email => (
-                                        <button 
-                                            key={email.id}
-                                            onClick={() => setSelectedId(email.id)}
-                                            className={`w-full text-left p-5 mb-2 rounded-none transition-all duration-200 border-l-4 ${selectedId === email.id ? "bg-white/10 border-[#6082B6] text-white" : "hover:bg-white/5 border-transparent text-white/60"}`}
-                                        >
-                                            <div className="text-[12px] font-bold uppercase truncate mb-1 tracking-tight leading-tight">{email.betreff || "Kein Betreff"}</div>
-                                            <div className={`text-[10px] font-bold uppercase tracking-widest opacity-40`}>{new Date(email.received_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} UHR</div>
-                                        </button>
-                                    ))}
+                                <div className="flex h-[3px] w-full mb-3 overflow-hidden">
+                                    <div className="flex-1 bg-[#E2001A]" />
+                                    <div className="flex-1 bg-[#F39200]" />
+                                    <div className="flex-1 bg-[#009697]" />
+                                    <div className="flex-1 bg-[#6082B6]" />
+                                </div>
+                                <div className="text-[8px] font-bold text-[#F39200] uppercase tracking-widest flex items-center gap-1.5">
+                                    <div className="w-1 h-1 bg-[#F39200] rounded-full animate-pulse" />
+                                    {pendingCount} Posteingänge
                                 </div>
                             </div>
 
-                            {/* MAIN DECISION ENGINE */}
-                            <div className="flex-1 flex flex-col min-w-0 bg-[#F9F9F9]">
-                                {currentMail ? (
-                                    <div className="flex-1 flex flex-col overflow-hidden">
-                                        {/* HEADER BAR */}
-                                        <div className="flex items-center justify-between px-10 py-6 border-b border-black/10 bg-white">
-                                            <div className="flex items-center gap-8">
-                                                <HotelSelectorHeader 
-                                                    hotelName={currentMail?.agent_logs?.target_hotel || ""} 
-                                                    onUpdateHotel={handleUpdateHotel} 
-                                                />
-                                                <div className="hidden lg:block text-[12px] font-black uppercase tracking-[0.3em] text-[#6082B6] opacity-30">
-                                                    Decision Hub
-                                                </div>
-                                            </div>
-                                            <button className="hover:rotate-90 transition-transform duration-500 text-[#444444]" title="Bildschirmschoner" onClick={() => setIsMinimized(true)}>
-                                                <Minimize2 className="w-6 h-6" />
-                                            </button>
+                            <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-3">
+                                {emails.slice(0, 30).map((email) => (
+                                    <button
+                                        key={email.id}
+                                        onClick={() => setSelectedId(email.id)}
+                                        className={`w-full text-left px-3 py-2.5 mb-0.5 transition-all duration-150 border-l-2 ${
+                                            selectedId === email.id
+                                                ? "bg-white/10 border-[#6082B6] text-white"
+                                                : "hover:bg-white/5 border-transparent text-white/45"
+                                        }`}
+                                    >
+                                        <div className="text-[11px] font-bold truncate mb-0.5 leading-snug">
+                                            {email.betreff || "Kein Betreff"}
                                         </div>
+                                        <div className="text-[9px] font-bold uppercase tracking-widest opacity-30">
+                                            {new Date(email.received_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} Uhr
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
 
-                                        <div className="flex-1 grid grid-cols-12 min-h-0">
-                                            {/* LEFT: ORIGINAL (WIDER) */}
-                                            <div className="col-span-4 border-r border-black/10 bg-[#F9F9F9] flex flex-col overflow-y-auto custom-scrollbar p-6">
-                                                <div className="flex items-center gap-2 mb-6 opacity-30">
-                                                    <MessageSquare className="w-4 h-4" />
-                                                    <span className="text-[9px] font-black uppercase tracking-[0.4em]">E-Mail Verlauf</span>
+                        {/* ── HAUPTBEREICH ── */}
+                        <div className="flex-1 flex flex-col min-w-0">
+                            {currentMail ? (
+                                <>
+                                    {/* TOP-HEADER: Hotel-Wahl + Agent-Fortschritt + Minimize */}
+                                    <div className="shrink-0 flex items-center justify-between px-7 py-3 border-b border-black/8 bg-white">
+                                        <div className="flex items-center gap-4">
+                                            <HotelSelectorHeader
+                                                hotelName={currentMail.agent_logs?.target_hotel || ""}
+                                                onUpdateHotel={handleUpdateHotel}
+                                            />
+                                            <AgentProgressSlim step={step} currentMail={currentMail} />
+                                        </div>
+                                        <button
+                                            className="hover:rotate-90 transition-transform duration-500 text-black/25 hover:text-black"
+                                            title="Bildschirmschoner"
+                                            onClick={() => setIsMinimized(true)}
+                                        >
+                                            <Minimize2 className="w-5 h-5" />
+                                        </button>
+                                    </div>
+
+                                    {/* CONTENT: 3 Spalten — Preview / Entwurf / Insights */}
+                                    <div className="flex-1 grid grid-cols-12 min-h-0 overflow-hidden">
+
+                                        {/* ── SPALTE 1: E-MAIL PREVIEW (3/12 = 25%) ── */}
+                                        <div className="col-span-3 border-r border-black/8 bg-white flex flex-col overflow-hidden">
+                                            <div className="shrink-0 px-5 py-3 border-b border-black/5 flex items-center gap-2 text-black/25">
+                                                <MessageSquare className="w-3.5 h-3.5" />
+                                                <span className="text-[9px] font-black uppercase tracking-[0.35em]">Eingehende Mail</span>
+                                            </div>
+
+                                            <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
+                                                {/* Betreff */}
+                                                <div className="mb-4 pb-4 border-b border-black/5">
+                                                    <div className="text-[8px] uppercase font-black tracking-widest text-black/20 mb-1.5">Betreff</div>
+                                                    <h2 className="text-[13px] font-bold tracking-tight leading-snug text-black">
+                                                        {currentMail.betreff}
+                                                    </h2>
                                                 </div>
-                                                
-                                                {/* Actual Mail Content */}
-                                                <div className="mb-8 bg-white p-6 border border-black/5 shadow-sm rounded-none">
-                                                    <h2 className="text-lg font-bold tracking-tight mb-4 leading-tight">{currentMail.betreff}</h2>
+
+                                                {/* Absender-Karte */}
+                                                {currentMail.senders?.[0] && (
+                                                    <div className="flex items-center gap-2.5 mb-5 p-3 bg-[#F9F9F9] border border-black/5">
+                                                        <div className="w-8 h-8 bg-[#6082B6] flex items-center justify-center shrink-0 text-white text-[11px] font-black">
+                                                            {(currentMail.senders[0].name || currentMail.senders[0].email).charAt(0).toUpperCase()}
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                            <div className="text-[11px] font-bold truncate leading-tight">
+                                                                {currentMail.senders[0].name || currentMail.senders[0].email}
+                                                            </div>
+                                                            <div className="text-[9px] text-black/30 truncate">
+                                                                {currentMail.senders[0].email}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* Mail-Inhalt */}
+                                                <div className="text-[12px] leading-relaxed text-black/65">
                                                     {currentMail.body_html ? (
-                                                        <div className="prose prose-sm opacity-90 max-w-none break-words overflow-hidden" dangerouslySetInnerHTML={{ __html: currentMail.body_html }} />
+                                                        <div
+                                                            className="prose prose-xs max-w-none break-words overflow-hidden"
+                                                            dangerouslySetInnerHTML={{ __html: currentMail.body_html }}
+                                                        />
                                                     ) : (
-                                                        <div className="text-sm italic opacity-80 leading-relaxed">&quot;{currentMail.body_text}&quot;</div>
+                                                        <div className="italic leading-relaxed">{currentMail.body_text}</div>
                                                     )}
                                                 </div>
 
-                                                {/* Simplified Thread/Context View */}
-                                                {currentMail.agent_logs?.relevant_context ? (
-                                                    <div className="mt-2 flex flex-col gap-3">
-                                                        <span className="text-[9px] font-black uppercase tracking-widest text-[#6082B6]">Historischer Kontext:</span>
-                                                        <div className="text-[12px] text-black/60 italic leading-relaxed bg-white p-4 border border-black/5">
+                                                {/* Historischer Kontext */}
+                                                {currentMail.agent_logs?.relevant_context && (
+                                                    <div className="mt-5 pt-4 border-t border-black/5">
+                                                        <span className="text-[9px] font-black uppercase tracking-widest text-[#6082B6] block mb-2">
+                                                            Historischer Kontext
+                                                        </span>
+                                                        <div className="text-[11px] text-black/50 italic leading-relaxed">
                                                             {currentMail.agent_logs.relevant_context}
                                                         </div>
                                                     </div>
-                                                ) : (
-                                                    <div className="mt-2 text-[10px] uppercase font-bold text-black/10 text-center py-6 border border-dashed border-black/10">
-                                                        Keine weiteren Daten
-                                                    </div>
                                                 )}
                                             </div>
+                                        </div>
 
-                                            {/* CENTER: RESOLUTION */}
-                                            <div className="col-span-5 flex flex-col p-8 bg-white overflow-hidden border-r border-black/10">
-                                                <AgentStatusHeader step={step} currentMail={currentMail} onUpdateHotel={handleUpdateHotel} />
-                                                
-                                                <div className="flex-1 flex flex-col min-h-0">
-                                                    <div className="flex items-center justify-between mb-4">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#6082B6]">Antwort-Entwurf:</span>
-                                                            <div className="flex items-center gap-1 px-2 py-0.5 bg-[#F39200]/10 border border-[#F39200]/30 text-[#F39200]" title="Nur intern sichtbar — Empfänger sieht diesen Hinweis nicht">
-                                                                <Sparkles className="w-2.5 h-2.5" />
-                                                                <span className="text-[8px] font-black uppercase tracking-widest">KI-Entwurf</span>
-                                                            </div>
-                                                        </div>
-                                                        <div className="flex items-center gap-2">
-                                                            <button
-                                                                onClick={handleCopy}
-                                                                disabled={!editedDraft || step < 4}
-                                                                title="In Zwischenablage kopieren"
-                                                                className="flex items-center gap-1.5 px-3 py-1 border border-black/10 hover:bg-black hover:text-white text-black/40 text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-20"
-                                                            >
-                                                                {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-                                                                {copied ? "KOPIERT" : "KOPIEREN"}
-                                                            </button>
+                                        {/* ── SPALTE 2: ANTWORT-ENTWURF (6/12 = 50%) ── */}
+                                        <div className="col-span-6 flex flex-col bg-white border-r border-black/8 overflow-hidden">
+                                            <div className="shrink-0 px-8 py-3 border-b border-black/5 flex items-center justify-between">
+                                                <div className="flex items-center gap-2.5">
+                                                    <span className="text-[9px] font-black uppercase tracking-[0.35em] text-[#6082B6]">Antwort-Entwurf</span>
+                                                    <div className="flex items-center gap-1 px-2 py-0.5 bg-[#F39200]/10 border border-[#F39200]/30 text-[#F39200]" title="KI-Entwurf — nur intern sichtbar">
+                                                        <Sparkles className="w-2.5 h-2.5" />
+                                                        <span className="text-[7px] font-black uppercase tracking-widest">KI-Entwurf</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={handleCopy}
+                                                        disabled={!editedDraft || step < 4}
+                                                        title="In Zwischenablage kopieren"
+                                                        className="flex items-center gap-1.5 px-2.5 py-1 border border-black/10 hover:bg-black hover:text-white text-black/30 text-[8px] font-black uppercase tracking-widest transition-all disabled:opacity-20"
+                                                    >
+                                                        {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                                                        {copied ? "Kopiert" : "Kopieren"}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <motion.div
+                                                initial={{ opacity: 0, y: 8 }}
+                                                animate={{ opacity: step >= 4 ? 1 : 0.04, y: step >= 4 ? 0 : 8 }}
+                                                className="flex-1 flex flex-col min-h-0"
+                                            >
+                                                {currentMail.status === "ignored" || currentMail.intent === "Spam/Irrelevant" ? (
+                                                    <div className="flex-1 flex flex-col items-center justify-center text-[#E2001A] gap-4">
+                                                        <div className="w-14 h-14 border-2 border-[#E2001A] flex items-center justify-center font-bold text-2xl">!</div>
+                                                        <div className="text-base font-bold uppercase tracking-widest text-center leading-tight">
+                                                            SPAM / IRRELEVANT
+                                                            <br />
+                                                            <span className="text-[10px] font-medium opacity-60 tracking-normal capitalize">
+                                                                Nachricht als nicht relevant eingestuft.
+                                                            </span>
                                                         </div>
                                                     </div>
+                                                ) : (
+                                                    <textarea
+                                                        value={editedDraft}
+                                                        onChange={(e) => setEditedDraft(e.target.value)}
+                                                        disabled={step < 4 || currentMail.status !== "processing"}
+                                                        placeholder="Petulia erstellt Antwortvorschlag..."
+                                                        className="flex-1 w-full px-10 py-8 bg-white text-black resize-none outline-none font-sans text-[15px] lg:text-[16px] font-medium leading-relaxed tracking-wide selection:bg-[#6082B6] selection:text-white disabled:cursor-default custom-scrollbar border-0"
+                                                    />
+                                                )}
+                                            </motion.div>
 
-                                                    <motion.div
-                                                        initial={{ opacity: 0, y: 30 }}
-                                                        animate={{ opacity: step >= 4 ? 1 : 0.05, y: step >= 4 ? 0 : 10 }}
-                                                        className="flex-1 flex flex-col min-h-0"
+                                            {/* Aktions-Buttons */}
+                                            {currentMail.status === "processing" && (
+                                                <motion.div
+                                                    initial={{ opacity: 0, y: 6 }}
+                                                    animate={{ opacity: step >= 4 ? 1 : 0, y: step >= 4 ? 0 : 6 }}
+                                                    className="shrink-0 px-8 pb-7 pt-4 flex gap-3"
+                                                >
+                                                    <button
+                                                        onClick={() => handleAction("approve")}
+                                                        disabled={actionStatus !== "idle" || step < 4}
+                                                        className="flex-[3] h-12 bg-[#6082B6] text-white hover:bg-[#444444] transition-all text-sm font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-3 group disabled:opacity-30 active:translate-y-0.5 shadow-md"
                                                     >
-                                                        {currentMail.status === "ignored" || currentMail.intent === "Spam/Irrelevant" ? (
-                                                            <div className="flex-1 flex flex-col items-center justify-center text-[#E2001A] gap-4 py-12 border border-black/10 bg-white">
-                                                                <div className="w-16 h-16 border-2 border-[#E2001A] flex items-center justify-center font-bold text-3xl rounded-none">!</div>
-                                                                <div className="text-lg font-bold uppercase tracking-widest text-center leading-tight">
-                                                                    SPAM / IRRELEVANT<br/>
-                                                                    <span className="text-[10px] font-medium opacity-60 tracking-normal capitalize">Nachricht als nicht relevant eingestuft.</span>
-                                                                </div>
-                                                            </div>
-                                                        ) : (
-                                                            <textarea
-                                                                value={editedDraft}
-                                                                onChange={(e) => setEditedDraft(e.target.value)}
-                                                                disabled={step < 4 || currentMail.status !== "processing"}
-                                                                placeholder="Petulia erstellt Antwortvorschlag..."
-                                                                className="flex-1 w-full p-8 border border-black/10 bg-white text-black resize-none outline-none shadow-inner font-sans text-[16px] lg:text-[17px] font-medium leading-relaxed tracking-wide selection:bg-[#6082B6] selection:text-white disabled:cursor-default custom-scrollbar"
-                                                            />
-                                                        )}
-                                                    </motion.div>
+                                                        {actionStatus === "approving" ? "WIRD VERARBEITET..." : "BESTÄTIGEN & AUSFÜHREN"}
+                                                        <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleAction("reject")}
+                                                        disabled={actionStatus !== "idle"}
+                                                        className="flex-1 h-12 border border-black/10 bg-white hover:bg-[#E2001A] hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest flex items-center justify-center text-black/30"
+                                                    >
+                                                        ABLEHNEN
+                                                    </button>
+                                                </motion.div>
+                                            )}
+                                        </div>
 
-                                                    {/* MASTER APPROVAL ACTION */}
-                                                    {currentMail.status === "processing" && (
-                                                        <motion.div 
-                                                            initial={{ opacity: 0, scale: 0.9 }}
-                                                            animate={{ opacity: step >= 4 ? 1 : 0, scale: step >= 4 ? 1 : 0.95 }}
-                                                            className="mt-8 flex gap-4 h-20 shrink-0"
-                                                        >
-                                                            <button
-                                                                onClick={() => handleAction("approve")} disabled={actionStatus !== "idle" || step < 4}
-                                                                className="flex-[3] bg-[#6082B6] text-white hover:bg-[#444444] border-0 rounded-none transition-all text-lg font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-4 group disabled:opacity-30 active:translate-y-1 shadow-lg"
-                                                            >
-                                                                {actionStatus === "approving" ? "WIRD VERARBEITET..." : "BESTÄTIGEN & AUSFÜHREN"}
-                                                                <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleAction("reject")} disabled={actionStatus !== "idle"}
-                                                                className="flex-1 border border-black/10 bg-white hover:bg-[#E2001A] hover:text-white rounded-none transition-all text-[10px] font-bold uppercase tracking-widest flex items-center justify-center text-black/40 hover:opacity-100 shadow-sm"
-                                                            >
-                                                                ABLEHNEN
-                                                            </button>
-                                                        </motion.div>
-                                                    )}
-                                                </div>
+                                        {/* ── SPALTE 3: KOMPAKTE INSIGHTS (3/12 = 25%) ── */}
+                                        <div className="col-span-3 flex flex-col bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
+                                            <div className="shrink-0 px-4 py-3 border-b border-black/5 flex items-center gap-2 text-black/25">
+                                                <Database className="w-3.5 h-3.5 text-[#6082B6]" />
+                                                <span className="text-[9px] font-black uppercase tracking-[0.35em]">Ergebnisse</span>
                                             </div>
 
-                                            {/* RIGHT: PMS EVIDENCE */}
-                                            <div className="col-span-3 flex flex-col p-6 bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
-                                                <div className="flex items-center gap-2 mb-6 text-[#444444]">
-                                                    <Database className="w-4 h-4 text-[#6082B6]" />
-                                                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">PMS Datenabgleich</span>
-                                                </div>
+                                            <div className="p-4 space-y-3">
+                                                {/* Erkannte Anfrage */}
+                                                {currentMail.intent && (
+                                                    <div className="bg-white border border-black/5 p-3">
+                                                        <div className="text-[8px] uppercase text-black/20 font-black tracking-widest mb-1.5">
+                                                            Erkannte Anfrage
+                                                        </div>
+                                                        <div className="text-[12px] font-bold text-[#6082B6] leading-snug">
+                                                            {currentMail.intent}
+                                                        </div>
+                                                    </div>
+                                                )}
 
-                                                {/* Retrieved Data */}
-                                                <div className="space-y-6">
-                                                    {currentMail.agent_logs?.threeRpmsData ? (
-                                                        <motion.div 
-                                                            initial={{ opacity: 0, x: 20 }}
-                                                            animate={{ opacity: 1, x: 0 }}
-                                                            className="bg-white border-l-4 border-[#009697] p-5 shadow-sm"
-                                                        >
-                                                            <div className="text-[9px] font-black text-[#009697] uppercase tracking-widest mb-3">Live-Daten gefunden</div>
-                                                            <div className="space-y-3">
-                                                                <div>
-                                                                    <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Gast / Reservierung</div>
-                                                                    <div className="text-[13px] font-bold text-[#444444]">
-                                                                        {currentMail.agent_logs.threeRpmsData.first_guest?.lastname || "Unbekannt"}
-                                                                        <span className="ml-2 px-1.5 py-0.5 bg-[#444444] text-white text-[9px] font-black uppercase tracking-widest">{currentMail.agent_logs.threeRpmsData.reservation?.code || "No Code"}</span>
-                                                                    </div>
-                                                                </div>
-                                                                <div className="flex gap-4">
-                                                                    <div>
-                                                                        <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Anreise</div>
-                                                                        <div className="text-[11px] font-bold">{currentMail.agent_logs.threeRpmsData.reservation_from || "--"}</div>
-                                                                    </div>
-                                                                    <div>
-                                                                        <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Abreise</div>
-                                                                        <div className="text-[11px] font-bold">{currentMail.agent_logs.threeRpmsData.reservation_to || "--"}</div>
-                                                                    </div>
-                                                                </div>
-                                                                <div>
-                                                                    <div className="text-[8px] uppercase text-black/40 font-bold tracking-widest">Status</div>
-                                                                    <div className="text-[11px] font-bold px-2 py-0.5 bg-green-50 text-green-700 inline-block border border-green-200">
-                                                                        {currentMail.agent_logs.threeRpmsData.status || "Aktive Buchung"}
-                                                                    </div>
-                                                                </div>
+                                                {/* PMS-Reservierungsdaten */}
+                                                {currentMail.agent_logs?.threeRpmsData ? (
+                                                    <motion.div
+                                                        initial={{ opacity: 0, x: 8 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        className="bg-white border-l-2 border-[#009697] p-3 shadow-sm"
+                                                    >
+                                                        <div className="flex items-center gap-1.5 mb-3">
+                                                            <CheckCircle2 className="w-3 h-3 text-[#009697]" />
+                                                            <span className="text-[8px] font-black text-[#009697] uppercase tracking-widest">
+                                                                Reservierung gefunden
+                                                            </span>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <div className="flex justify-between items-center gap-2">
+                                                                <span className="text-[8px] uppercase text-black/25 font-black tracking-wide shrink-0">Gast</span>
+                                                                <span className="text-[11px] font-bold text-[#444444] text-right truncate">
+                                                                    {currentMail.agent_logs.threeRpmsData.first_guest?.lastname || "—"}
+                                                                </span>
                                                             </div>
-                                                        </motion.div>
-                                                    ) : (
-                                                        <div className="p-10 border border-dashed border-black/10 flex flex-col items-center justify-center gap-4 text-center">
-                                                            <Database className="w-8 h-8 text-black/5" />
-                                                            <div className="text-[10px] font-bold text-black/20 uppercase tracking-widest underline decoration-[#E2001A]">
-                                                                {currentMail.status === "new"
-                                                                    ? "Petulia analysiert jetzt..."
-                                                                    : (currentMail.agent_logs?.target_hotel && currentMail.agent_logs.target_hotel !== "UNKLAR"
-                                                                        ? "Keine PMS-Daten für dieses Hotel gefunden"
-                                                                        : "Hotel-Zuordnung oben erforderlich")}
+                                                            <div className="flex justify-between items-center gap-2">
+                                                                <span className="text-[8px] uppercase text-black/25 font-black tracking-wide shrink-0">Code</span>
+                                                                <span className="text-[8px] font-black bg-[#444444] text-white px-1.5 py-0.5">
+                                                                    {currentMail.agent_logs.threeRpmsData.reservation?.code || "—"}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex justify-between items-center gap-2">
+                                                                <span className="text-[8px] uppercase text-black/25 font-black tracking-wide shrink-0">Anreise</span>
+                                                                <span className="text-[10px] font-bold">
+                                                                    {currentMail.agent_logs.threeRpmsData.reservation_from || "—"}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex justify-between items-center gap-2">
+                                                                <span className="text-[8px] uppercase text-black/25 font-black tracking-wide shrink-0">Abreise</span>
+                                                                <span className="text-[10px] font-bold">
+                                                                    {currentMail.agent_logs.threeRpmsData.reservation_to || "—"}
+                                                                </span>
+                                                            </div>
+                                                            <div className="pt-2 mt-1 border-t border-black/5">
+                                                                <span className="inline-block text-[9px] px-2 py-0.5 bg-green-50 text-green-700 border border-green-200 font-bold">
+                                                                    {currentMail.agent_logs.threeRpmsData.status || "Aktive Buchung"}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </motion.div>
+                                                ) : (
+                                                    <div className="p-5 border border-dashed border-black/10 flex flex-col items-center gap-2 text-center">
+                                                        <Database className="w-5 h-5 text-black/8" />
+                                                        <div className="text-[9px] font-bold text-black/20 uppercase tracking-widest leading-snug">
+                                                            {currentMail.status === "new"
+                                                                ? "Wird analysiert..."
+                                                                : currentMail.agent_logs?.target_hotel && currentMail.agent_logs.target_hotel !== "UNKLAR"
+                                                                    ? "Keine PMS-Daten"
+                                                                    : "Hotel wählen"}
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* Geplante Aktion */}
+                                                {currentMail.agent_logs?.actionData?.graphql_mutation &&
+                                                    currentMail.agent_logs.actionData.graphql_mutation !== "none" && (
+                                                        <div className="bg-[#444444] p-3 text-white">
+                                                            <div className="flex items-center gap-1.5 mb-2">
+                                                                <ChevronRight className="w-3 h-3 text-[#F39200]" />
+                                                                <span className="text-[8px] font-black text-[#F39200] uppercase tracking-widest">
+                                                                    Geplante Aktion
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-[11px] font-bold leading-snug">{currentMail.api_action}</div>
+                                                            <div className="mt-2 text-[8px] font-mono opacity-35 uppercase tracking-wide">
+                                                                Erst nach Bestätigung
                                                             </div>
                                                         </div>
                                                     )}
-
-                                                    {/* Planned Action */}
-                                                    {currentMail.agent_logs?.actionData?.graphql_mutation && currentMail.agent_logs.actionData.graphql_mutation !== "none" && (
-                                                        <div className="bg-[#444444] p-5 text-white shadow-lg">
-                                                            <div className="text-[9px] font-black text-[#F39200] uppercase tracking-widest mb-3">Geplante Aktion</div>
-                                                            <div className="space-y-4">
-                                                                <div className="text-[12px] font-bold italic leading-tight">{currentMail.api_action}</div>
-                                                                <div className="text-[8px] font-mono opacity-50 uppercase tracking-widest">Aktion wird erst nach Klick auf &quot;Bestätigen&quot; ausgeführt</div>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </div>
                                             </div>
                                         </div>
+
                                     </div>
-                                ) : (
-                                    <div className="flex-1 flex flex-col items-center justify-center bg-[#F2EFE6]">
-                                        <Layers className="w-24 h-24 text-black/10 animate-pulse" />
-                                    </div>
-                                )}
+                                </>
+                            ) : (
+                                <div className="flex-1 flex items-center justify-center bg-[#F2EFE6]">
+                                    <Layers className="w-20 h-20 text-black/10 animate-pulse" />
+                                </div>
+                            )}
+                        </div>
+                    </motion.div>
+                ) : (
+                    <motion.div
+                        key="screensaver"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.3 }}
+                        className="absolute inset-0 flex items-center justify-center bg-[#F9F9F9] cursor-pointer"
+                        onClick={() => setIsMinimized(false)}
+                    >
+                        <div className="bg-white border border-black/10 px-16 py-20 lg:px-24 lg:py-20 shadow-2xl text-center">
+                            <div className="flex flex-col items-center mb-2">
+                                <h1 className="text-[60px] lg:text-[100px] font-serif tracking-widest leading-none text-[#444444] uppercase">
+                                    APART HOTELS
+                                </h1>
+                                <span
+                                    className="text-[50px] lg:text-[80px] font-light italic lowercase text-[#444444] opacity-80 -mt-4"
+                                    style={{ fontFamily: "serif" }}
+                                >
+                                    petul
+                                </span>
                             </div>
-                        </motion.div>
-                    ) : (
-                        <motion.div 
-                            key="screensaver-editorial"
-                            initial={{ opacity: 0, scale: 1 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 1 }}
-                            className="bg-white border border-black/10 px-16 py-20 lg:px-24 lg:py-20 shadow-2xl rounded-none cursor-pointer hover:shadow-3xl transition-all duration-300"
-                            onClick={() => setIsMinimized(false)}
-                        >
-                            <div className="flex flex-col mb-10 items-center">
-                                <h1 className="text-[60px] lg:text-[100px] font-serif tracking-widest leading-none text-[#444444] uppercase m-0 p-0 text-center">APART HOTELS</h1>
-                                <span className="text-[50px] lg:text-[80px] font-light italic lowercase text-[#444444] opacity-80 -mt-4" style={{ fontFamily: 'serif' }}>petul</span>
-                            </div>
-                            <div className="flex items-center gap-6 mt-8">
+                            <div className="flex mt-8">
                                 <div className="h-0.5 flex-1 bg-[#E2001A]" />
                                 <div className="h-0.5 flex-1 bg-[#F39200]" />
                                 <div className="h-0.5 flex-1 bg-[#009697]" />
                                 <div className="h-0.5 flex-1 bg-[#6082B6]" />
                             </div>
-                            <p className="text-center mt-8 text-[12px] uppercase font-bold tracking-[0.4em] text-[#6082B6] m-0">Petulia bereit zur Bearbeitung</p>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
-            
+                            <p className="mt-8 text-[12px] uppercase font-bold tracking-[0.4em] text-[#6082B6]">
+                                Petulia bereit zur Bearbeitung
+                            </p>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 }

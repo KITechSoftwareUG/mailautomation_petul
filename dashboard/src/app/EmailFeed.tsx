@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check
+    Bot, ArrowRight, Minimize2, Layers, CheckCircle2, CircleDashed, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check, Sparkles
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -299,7 +299,13 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                 
                                                 <div className="flex-1 flex flex-col min-h-0">
                                                     <div className="flex items-center justify-between mb-4">
-                                                        <span className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#6082B6]">Antwort-Entwurf:</span>
+                                                        <div className="flex items-center gap-3">
+                                                            <span className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#6082B6]">Antwort-Entwurf:</span>
+                                                            <div className="flex items-center gap-1 px-2 py-0.5 bg-[#F39200]/10 border border-[#F39200]/30 text-[#F39200]" title="Nur intern sichtbar — Empfänger sieht diesen Hinweis nicht">
+                                                                <Sparkles className="w-2.5 h-2.5" />
+                                                                <span className="text-[8px] font-black uppercase tracking-widest">KI-Entwurf</span>
+                                                            </div>
+                                                        </div>
                                                         <div className="flex items-center gap-2">
                                                             <button
                                                                 onClick={handleCopy}
@@ -310,7 +316,6 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                                 {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
                                                                 {copied ? "KOPIERT" : "KOPIEREN"}
                                                             </button>
-                                                            <div className="px-3 py-1 bg-[#6082B6]/10 text-[#6082B6] text-[9px] font-black uppercase rounded-none">Bearbeitbar</div>
                                                         </div>
                                                     </div>
 

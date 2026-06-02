@@ -1,12 +1,13 @@
 /**
  * PETUL – Standalone Node.js Mail Automation
- * 
- * Dieses Script hält eine dauerhafte Verbindung zum Mail-Server (IMAP IDLE).
- * Sobald eine Mail ankommt, wird sie:
- * 1. Geparst und normalisiert
- * 2. In Supabase gespeichert/dedupliziert (RPC process_incoming_email)
- * 3. Die Historie aus Supabase geladen
- * 4. Der Petul OpenAI Agent für eine Antwortentscheidung aufgerufen
+ *
+ * Ablauf bei eingehender Mail:
+ * 1. Parsen & normalisieren
+ * 2. In Supabase speichern (RPC process_incoming_email)
+ * 3. KI-Pipeline: Intent → 3RPMS Lookup + Inventory → Policy → Action (Plan)
+ * 4. Ergebnis (inkl. geplanter Mutation) in Supabase schreiben, Status: "processing"
+ * 5. Mensch genehmigt im Dashboard → Status: "approved"
+ * 6. processOutbound führt Mutation aus, sendet E-Mail, Status: "sent"
  */
 
 import { ImapFlow } from "imapflow";
@@ -17,11 +18,19 @@ import * as dotenv from "dotenv";
 import { processIntent } from "./agents/01_intentAgent";
 import { checkPolicy } from "./agents/02_policyAgent";
 import { determineAction } from "./agents/03_actionAgent";
-import { getReservationByCode, getRoomStays, getApiKeyForHotel, resolveHotelName, query3RPMS } from "./utils/threerpms";
+import {
+    HOTELS,
+    identifyHotel,
+    query3RPMS,
+    getReservationByCode,
+    getInventory,
+    getHotelSettings,
+} from "./utils/threerpms";
+import { getSignature } from "./utils/signatures";
 
 dotenv.config();
 
-// -- helpers: Normalization --
+// ─── Helpers: Normalization ───────────────────────────────────────────────────
 
 function cleanId(val: string | null | undefined): string | null {
     if (!val) return null;
@@ -58,34 +67,7 @@ function extractEmails(field: any): string[] {
     return [];
 }
 
-function extractThreadInfo(parsed: any): { in_reply_to: string | null; reference_last: string | null } {
-    let inReplyTo =
-        parsed.inReplyTo ||
-        parsed.headers?.get?.("in-reply-to") ||
-        parsed.headers?.get?.("In-Reply-To") ||
-        null;
-
-    inReplyTo = cleanId(inReplyTo);
-
-    let references =
-        parsed.references ||
-        parsed.headers?.get?.("references") ||
-        parsed.headers?.get?.("References") ||
-        null;
-
-    let referenceLast = null;
-
-    if (Array.isArray(references)) {
-        referenceLast = cleanId(references[references.length - 1]);
-    } else if (typeof references === "string") {
-        const refArray = references.split(" ").map((r: string) => r.trim()).filter(Boolean);
-        referenceLast = cleanId(refArray[refArray.length - 1]);
-    }
-
-    return { in_reply_to: inReplyTo, reference_last: referenceLast };
-}
-
-// -- AI Setup --
+// ─── Env Validation ───────────────────────────────────────────────────────────
 
 const imapHost = process.env.IMAP_HOST;
 const imapUser = process.env.IMAP_USER;
@@ -100,12 +82,36 @@ if (!imapHost || !imapUser || !imapPassword || !supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-/**
- * Kern-Logik für die Verarbeitung einer Mail via AI Pipeline
- */
+const transporter = nodemailer.createTransport({
+    host: process.env.IMAP_HOST,
+    port: 465,
+    secure: true,
+    auth: { user: imapUser!, pass: imapPassword! },
+});
+
+// ─── Hotel Product Cache (einmalig beim Start geladen) ────────────────────────
+
+const hotelProductsCache: Record<string, any> = {};
+
+async function warmProductCache() {
+    console.log("🗂️  Produkt-Cache: Lade Hotel-Settings aus 3RPMS...");
+    for (const hotel of HOTELS) {
+        if (!hotel.key) continue;
+        try {
+            const settings = await getHotelSettings(hotel.key);
+            hotelProductsCache[hotel.id] = settings;
+            console.log(`   ✅ ${hotel.name}: Settings geladen`);
+        } catch (err: any) {
+            console.warn(`   ⚠️  ${hotel.name}: Settings nicht verfügbar (${err.message})`);
+        }
+    }
+}
+
+// ─── KI Pipeline ──────────────────────────────────────────────────────────────
+
 async function runAiPipeline(mailData: any, threadId: string | null) {
     console.log(`🤖 KI Pipeline startet für mail_id: ${mailData.mail_id}`);
-    
+
     try {
         // 1. Thread History laden
         let historyText = "Keine Historie vorhanden.";
@@ -130,18 +136,29 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         console.log(`   → Intent: ${intentData.kategorie}`);
 
         if (intentData.kategorie === "Spam/Irrelevant") {
-            console.log("🗑️  Intent-Kategorie Spam/Irrelevant – wird als ignored markiert.");
             await supabase.from("emails").update({
                 status: "ignored",
                 intent: intentData.kategorie,
             }).eq("mail_id", mailData.mail_id);
+            console.log("🗑️  Spam/Irrelevant – als ignored markiert.");
             return;
         }
 
-        // 3. 3RPMS Data Fetching
+        // 3. Hotel identifizieren
+        const hotel = identifyHotel(
+            mailData.empfaenger,
+            mailData.forward_target,
+            intentData.extracted_entities.hotel_identifiziert
+        );
+        const hotelApiKey = hotel?.key || "";
+        const resolvedHotel = hotel?.name || "Unbekannt / Petul";
+        const hotelSource = hotel
+            ? (mailData.forward_target && hotel.email && mailData.forward_target.toLowerCase().includes(hotel.email) ? "email-header" : "ai-oder-keyword")
+            : "unbekannt";
+        console.log(`   → Hotel: ${resolvedHotel} (Quelle: ${hotelSource})`);
+
+        // 4. 3RPMS: Reservierungsdaten laden
         let threeRpmsData = null;
-        const hotelApiKey = getApiKeyForHotel(mailData.empfaenger, mailData.forward_target, intentData.extracted_entities.hotel_identifiziert);
-        const resolvedHotel = resolveHotelName(mailData.empfaenger, mailData.forward_target, intentData.extracted_entities.hotel_identifiziert);
         const resNum = intentData.extracted_entities.reservierungsnummer;
 
         if (resNum && hotelApiKey) {
@@ -149,93 +166,78 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 console.log(`   - [3RPMS] Suche Reservierung: ${resNum}`);
                 const res = await getReservationByCode(hotelApiKey, resNum);
                 threeRpmsData = res?.reservations?.edges?.[0]?.node || null;
-            } catch (err) {
-                console.error("   - [3RPMS] Fehler beim Abruf:", (err as any).message);
+                if (threeRpmsData) console.log(`   ✅ Reservierung gefunden: ${threeRpmsData.code}`);
+            } catch (err: any) {
+                console.warn(`   ⚠️  [3RPMS] Reservierungs-Abruf fehlgeschlagen: ${err.message}`);
             }
         }
 
-        // 4. Agent 2: Policy Check
+        // 5. 3RPMS: Verfügbarkeit laden (nur bei Reservierungsanfragen mit Daten)
+        let inventoryData = null;
+        if (intentData.kategorie === "Reservierungsanfrage" && hotelApiKey) {
+            const ankunft = intentData.extracted_entities.ankunft;
+            const abreise = intentData.extracted_entities.abreise;
+            if (ankunft && abreise) {
+                try {
+                    console.log(`   - [3RPMS] Verfügbarkeit prüfen: ${ankunft} – ${abreise}`);
+                    inventoryData = await getInventory(hotelApiKey, ankunft, abreise);
+                    console.log(`   ✅ Verfügbarkeitsdaten geladen`);
+                } catch (err: any) {
+                    console.warn(`   ⚠️  [3RPMS] Verfügbarkeits-Abruf fehlgeschlagen: ${err.message}`);
+                }
+            }
+        }
+
+        // 6. Agent 2: Policy Check
         console.log("   - [Step 2] Policy Agent prüft Richtlinien...");
         const policyData = await checkPolicy(intentData, mailData.body_text, threeRpmsData);
 
         if (policyData.is_spam) {
-            console.log("🗑️  Echter SPAM erkannt – wird als ignored markiert.");
             await supabase.from("emails").update({
                 status: "ignored",
                 intent: intentData.kategorie,
-                policy_decision_reason: "SPAM erkannt"
+                policy_decision_reason: "SPAM erkannt",
             }).eq("mail_id", mailData.mail_id);
+            console.log("🗑️  Echter SPAM erkannt – als ignored markiert.");
             return;
         }
 
-        // 5. Agent 3: Action & Response
-        console.log("   - [Step 3] Action Agent entscheidet API & formuliert Antwort...");
+        // 7. Agent 3: Action planen (Mutation wird NICHT ausgeführt – erst nach menschlicher Freigabe)
+        console.log("   - [Step 3] Action Agent plant Aktion und formuliert Antwort...");
+        const productCatalog = hotelProductsCache[hotel.id] || null;
+        const finalActionData = await determineAction(
+            intentData,
+            policyData,
+            mailData,
+            threeRpmsData,
+            inventoryData,
+            productCatalog
+        );
+        console.log(`   → Geplante Aktion: ${finalActionData.api_action}`);
 
-        let finalActionData = null;
-        let lastApiError = null;
-        let attempts = 0;
-        const loopLogs = [];
-        const maxAttempts = 3;
-
-        while (attempts < maxAttempts) {
-            attempts++;
-            console.log(`     -> Versuch ${attempts} ...`);
-            const currentActionData = await determineAction(intentData, policyData, mailData, threeRpmsData, lastApiError);
-
-            let executionResult = null;
-            let loopSuccess = true;
-
-            if (currentActionData.graphql_mutation && currentActionData.graphql_mutation !== "none") {
-                try {
-                    console.log(`       [GraphQL] Führe aus: ${currentActionData.api_action}`);
-                    executionResult = await query3RPMS(hotelApiKey, currentActionData.graphql_mutation,
-                        typeof currentActionData.graphql_variables === 'string'
-                            ? JSON.parse(currentActionData.graphql_variables)
-                            : currentActionData.graphql_variables
-                    );
-                    console.log(`       ✅ Erfolgreich ausgeführt.`);
-                } catch (err: any) {
-                    console.log(`       ❌ API FEHLER: ${err.message}`);
-                    lastApiError = err.message;
-                    loopSuccess = false;
-                }
-            }
-
-            loopLogs.push({
-                attempt: attempts,
-                thought: currentActionData.reflexion_loop_gedanken,
-                action: currentActionData.api_action,
-                mutation: currentActionData.graphql_mutation,
-                variables: currentActionData.graphql_variables,
-                success: loopSuccess,
-                error: lastApiError,
-                result: executionResult
-            });
-
-            finalActionData = currentActionData;
-            if (loopSuccess) break;
-        }
-
-        // 6. DB Update
+        // 8. DB Update – Status "processing", Mensch muss im Dashboard genehmigen
         const { error: updateError } = await supabase.from("emails").update({
             status: "processing",
             intent: intentData.kategorie,
             policy_decision_allowed: policyData.policy_passed,
             policy_decision_reason: policyData.policy_decision_reason,
-            api_action: finalActionData?.api_action,
-            draft_reply: finalActionData?.antwort_entwurf,
+            api_action: finalActionData.api_action,
+            draft_reply: finalActionData.antwort_entwurf,
             agent_logs: {
                 intentData,
                 policyData,
                 actionData: finalActionData,
-                loop_history: loopLogs,
                 threeRpmsData,
-                target_hotel: resolvedHotel
-            } as any
+                inventoryData,
+                target_hotel: resolvedHotel,
+                hotel_source: hotelSource,
+                forward_target: mailData.forward_target || null,
+                empfaenger: mailData.empfaenger || null,
+            } as any,
         }).eq("mail_id", mailData.mail_id);
 
         if (updateError) throw updateError;
-        console.log(`✅ Pipeline erfolgreich für ${mailData.mail_id}`);
+        console.log(`✅ Pipeline abgeschlossen – wartet auf Freigabe im Dashboard`);
 
     } catch (err: any) {
         console.error(`❌ Pipeline Fehler (${mailData.mail_id}):`, err.message);
@@ -243,20 +245,19 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
     }
 }
 
-/**
- * Verarbeitet "hängengebliebene" Mails beim Start
- */
+// ─── Recovery ─────────────────────────────────────────────────────────────────
+
 async function recoverPendingMails() {
     console.log("🔍 Recovery: Suche nach nicht verarbeiteten Mails (Status 'new', letzte 48h)...");
     const fortyEightHoursAgo = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
-    
+
     const { data: pending, error } = await supabase
         .from("emails")
         .select("*")
         .eq("status", "new")
         .gte("received_at", fortyEightHoursAgo)
-        .order("received_at", { ascending: false }) // Neueste zuerst für besseres UX
-        .limit(20); // Begrenzung auf die 20 aktuellsten um Überlastung zu vermeiden
+        .order("received_at", { ascending: false })
+        .limit(20);
 
     if (error) {
         console.error("❌ Recovery Fehler:", error.message);
@@ -264,20 +265,112 @@ async function recoverPendingMails() {
     }
 
     if (pending && pending.length > 0) {
-        console.log(`✨ Gefunden: ${pending.length} aktuelle Mails werden nachverarbeitet...`);
+        console.log(`✨ ${pending.length} Mails werden nachverarbeitet...`);
         for (const raw of pending) {
             const mailData = {
                 mail_id: raw.mail_id,
                 betreff: raw.betreff,
                 body_text: raw.body_text,
-                absender: "system-recovery", 
-                empfaenger: raw.empfaenger || "",
-                forward_target: raw.forward_target || ""
+                absender: "system-recovery",
+                empfaenger: (raw.agent_logs as any)?.empfaenger || "",
+                forward_target: (raw.agent_logs as any)?.forward_target || "",
             };
             await runAiPipeline(mailData, raw.thread_id);
         }
     }
 }
+
+// ─── Outbound: Mutation ausführen + E-Mail senden (nach menschlicher Freigabe) ─
+
+async function processOutbound() {
+    try {
+        const { data: approvedMails, error } = await supabase
+            .from("emails")
+            .select("id, mail_id, betreff, draft_reply, empfaenger, forward_target, agent_logs, senders!inner(email)")
+            .eq("status", "approved");
+
+        if (error || !approvedMails || approvedMails.length === 0) return;
+
+        for (const mail of approvedMails) {
+            try {
+                const recipientEmail = (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email;
+                if (!recipientEmail) continue;
+
+                // Geplante 3RPMS-Mutation ausführen
+                const actionData = (mail.agent_logs as any)?.actionData;
+                if (actionData?.graphql_mutation && actionData.graphql_mutation !== "none") {
+                    const hotel = identifyHotel(
+                        (mail as any).empfaenger || "",
+                        (mail as any).forward_target || "",
+                        (mail.agent_logs as any)?.target_hotel || null
+                    );
+                    if (hotel.key) {
+                        try {
+                            const variables = typeof actionData.graphql_variables === "string"
+                                ? JSON.parse(actionData.graphql_variables)
+                                : (actionData.graphql_variables || {});
+                            await query3RPMS(hotel.key, actionData.graphql_mutation, variables);
+                            console.log(`✅ 3RPMS Mutation ausgeführt: ${mail.mail_id} (${actionData.api_action})`);
+                        } catch (mutErr: any) {
+                            // Mutation fehlgeschlagen – E-Mail trotzdem senden (Mensch hat genehmigt)
+                            console.error(`⚠️  Mutation Fehler (${mail.mail_id}): ${mutErr.message} — E-Mail wird trotzdem gesendet`);
+                        }
+                    }
+                }
+
+                // E-Mail senden
+                const hotelId = identifyHotel(
+                    (mail as any).empfaenger || "",
+                    (mail as any).forward_target || "",
+                    (mail.agent_logs as any)?.target_hotel || null
+                )?.id ?? null;
+                const signature = getSignature(hotelId);
+                const bodyWithSignature = `${(mail as any).draft_reply}${signature}`;
+
+                await transporter.sendMail({
+                    from: `"Petulia AI Agent" <${process.env.IMAP_USER}>`,
+                    to: recipientEmail,
+                    subject: `Re: ${(mail as any).betreff}`,
+                    text: bodyWithSignature,
+                });
+
+                await supabase.from("emails").update({ status: "sent" }).eq("id", mail.id);
+                console.log(`✅ Outbound gesendet: ${mail.mail_id}`);
+            } catch (err: any) {
+                console.error("❌ Sende-Fehler:", err.message);
+            }
+        }
+    } catch (_) {}
+}
+
+// ─── Watcher: Manuell zurückgesetzte Mails (Status 'new') ────────────────────
+
+async function watchNewMails() {
+    try {
+        const { data: newMails, error } = await supabase
+            .from("emails")
+            .select("*, senders!inner(email, name)")
+            .eq("status", "new")
+            .limit(5);
+
+        if (error || !newMails || newMails.length === 0) return;
+
+        for (const mail of newMails) {
+            console.log(`🔄 Watcher: Manuell getriggerte Analyse für ${mail.mail_id}`);
+            const mailData = {
+                mail_id: mail.mail_id,
+                betreff: mail.betreff,
+                body_text: mail.body_text,
+                absender: (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email || "system",
+                empfaenger: (mail.agent_logs as any)?.empfaenger || "",
+                forward_target: (mail.agent_logs as any)?.forward_target || "",
+            };
+            await runAiPipeline(mailData, mail.thread_id);
+        }
+    } catch (_) {}
+}
+
+// ─── IMAP Listener ────────────────────────────────────────────────────────────
 
 async function startListener() {
     const client = new ImapFlow({
@@ -285,7 +378,7 @@ async function startListener() {
         port: Number(process.env.IMAP_PORT ?? 993),
         secure: process.env.IMAP_SECURE !== "false",
         auth: { user: imapUser!, pass: imapPassword! },
-        logger: false
+        logger: false,
     });
 
     console.log("📨 Petul: Verbinde zum Mailserver...");
@@ -302,7 +395,7 @@ async function startListener() {
             const messages = await client.fetch(data.count.toString(), {
                 envelope: true,
                 source: true,
-                flags: true
+                flags: true,
             });
 
             for await (const msg of messages) {
@@ -316,8 +409,15 @@ async function startListener() {
                 const rawHeaders = p.headers || new Map();
                 const absender = extractEmails(p.from)[0] || "";
                 const to_list = extractEmails(p.to);
-                const forwardHeader = (rawHeaders.get('x-forwarded-to') || rawHeaders.get('delivered-to') || rawHeaders.get('x-original-to') || "");
-                const forwardTarget = typeof forwardHeader === 'string' ? forwardHeader : (Array.isArray(forwardHeader) ? forwardHeader[0] : "");
+                const forwardHeader = (
+                    rawHeaders.get("x-forwarded-to") ||
+                    rawHeaders.get("delivered-to") ||
+                    rawHeaders.get("x-original-to") ||
+                    ""
+                );
+                const forwardTarget = typeof forwardHeader === "string"
+                    ? forwardHeader
+                    : (Array.isArray(forwardHeader) ? forwardHeader[0] : "");
 
                 const mailData = {
                     mail_id,
@@ -329,7 +429,7 @@ async function startListener() {
                     forward_target: forwardTarget,
                     received_at: p.date?.toISOString() || new Date().toISOString(),
                     in_reply_to: cleanId(p.inReplyTo),
-                    has_attachments: Array.isArray(p.attachments) && p.attachments.length > 0
+                    has_attachments: Array.isArray(p.attachments) && p.attachments.length > 0,
                 };
 
                 const { data: dbResult, error: dbError } = await supabase.rpc("process_incoming_email", {
@@ -357,7 +457,6 @@ async function startListener() {
                 await client.messageFlagsAdd(msg.seq, ["\\Seen"]);
             }
         });
-
     } catch (err) {
         console.error("❌ Fataler Fehler:", err);
     } finally {
@@ -365,84 +464,20 @@ async function startListener() {
     }
 
     client.on("close", () => {
-        console.log("⚠️ Verbindung verloren. Reconnect in 10 Sekunden...");
+        console.log("⚠️  Verbindung verloren. Reconnect in 10 Sekunden...");
         setTimeout(startListener, 10000);
     });
 }
 
-// Stats periodically
-process.on('uncaughtException', (err) => console.error('Uncaught:', err));
-process.on('unhandledRejection', (reason) => console.error('Unhandled:', reason));
+// ─── Start ────────────────────────────────────────────────────────────────────
 
-const transporter = nodemailer.createTransport({
-    host: process.env.IMAP_HOST,
-    port: 465,
-    secure: true,
-    auth: { user: imapUser!, pass: imapPassword! },
-});
+process.on("uncaughtException", (err) => console.error("Uncaught:", err));
+process.on("unhandledRejection", (reason) => console.error("Unhandled:", reason));
 
-async function processOutbound() {
-    try {
-        const { data: approvedMails, error } = await supabase
-            .from("emails")
-            .select("id, mail_id, betreff, draft_reply, senders!inner(email)")
-            .eq("status", "completed");
-
-        if (error) return;
-
-        for (const mail of approvedMails || []) {
-            try {
-                const recipientEmail = (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email;
-                if (!recipientEmail) continue;
-
-                await transporter.sendMail({
-                    from: `"Petulia AI Agent" <${process.env.IMAP_USER}>`,
-                    to: recipientEmail,
-                    subject: `Re: ${mail.betreff}`,
-                    text: mail.draft_reply,
-                });
-
-                await supabase.from("emails").update({ status: "sent" }).eq("id", mail.id);
-                console.log(`✅ Outbound gesendet: ${mail.mail_id}`);
-            } catch (err: any) {
-                console.error("❌ Sende-Fehler:", err.message);
-            }
-        }
-    } catch (err: any) {}
-}
-
-/**
- * Watcher: Checks for emails with status 'new' (e.g. manually reset in dashboard)
- * and processes them immediately.
- */
-async function watchNewMails() {
-    try {
-        const { data: newMails, error } = await supabase
-            .from("emails")
-            .select("*, senders!inner(email, name)")
-            .eq("status", "new")
-            .limit(5);
-
-        if (error || !newMails || newMails.length === 0) return;
-
-        for (const mail of newMails) {
-            console.log(`🔄 Watcher: Manuell getriggerte Analyse für ${mail.mail_id}`);
-            const mailData = {
-                mail_id: mail.mail_id,
-                betreff: mail.betreff,
-                body_text: mail.body_text,
-                absender: (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email || "system",
-                empfaenger: mail.empfaenger || "info@petul.de",
-                forward_target: mail.forward_target || ""
-            };
-            await runAiPipeline(mailData, mail.thread_id);
-        }
-    } catch (err) {}
-}
-
-// Initial Run
-recoverPendingMails().then(() => {
-    setInterval(processOutbound, 10000);
-    setInterval(watchNewMails, 5000); // Check every 5 seconds for manual interventions
-    startListener().catch(console.error);
+warmProductCache().then(() => {
+    recoverPendingMails().then(() => {
+        setInterval(processOutbound, 10000);
+        setInterval(watchNewMails, 5000);
+        startListener().catch(console.error);
+    });
 });

@@ -18,7 +18,23 @@ export const ACTION_SCHEMA = z.object({
     antwort_entwurf: z.string().describe("Der fertige, perfektionierte Antwortentwurf für den Gast.")
 });
 
-export async function determineAction(intentData: any, policyData: any, mailData: any, threeRpmsData: any = null, execution_error: string | null = null) {
+export async function determineAction(
+    intentData: any,
+    policyData: any,
+    mailData: any,
+    threeRpmsData: any = null,
+    inventoryData: any = null,
+    productCatalog: any = null,
+    execution_error: string | null = null
+) {
+    const inventorySection = inventoryData
+        ? `\n### VERFÜGBARKEITS-DATEN AUS 3RPMS (Für Reservierungsanfragen):\n${JSON.stringify(inventoryData, null, 2)}\n`
+        : `\n### VERFÜGBARKEITS-DATEN: Nicht verfügbar — sage dem Gast, dass eine Kollegin die genaue Verfügbarkeit prüft.\n`;
+
+    const productSection = productCatalog
+        ? `\n### PRODUKT-KATALOG (Für createExternalSale — exakte IDs verwenden):\n${JSON.stringify(productCatalog, null, 2)}\n`
+        : "";
+
     const prompt = `
 ${getActionPrompt()}
 
@@ -31,21 +47,20 @@ ${JSON.stringify(intentData, null, 2)}
 RICHTLINIEN-ENTSCHEIDUNG (Policy):
 ${JSON.stringify(policyData, null, 2)}
 
-ECHTZEIT-DATEN AUS 3RPMS:
+ECHTZEIT-DATEN AUS 3RPMS (Reservierung):
 ${threeRpmsData ? JSON.stringify(threeRpmsData, null, 2) : "Keine Live-Daten gefunden."}
-
+${inventorySection}${productSection}
 ${execution_error ? `
 ⚠️ VORHERIGER FEHLER BEIM API-AUFRUF:
 "${execution_error}"
 
 Bitte analysiere den Fehler, korrigiere deine Mutation/Query und versuche es erneut oder erkläre dem Gast, warum es nicht geklappt hat.
-` : ""}
-`;
+` : ""}`;
 
     const { object } = await generateObject({
-        model: openai("gpt-4o-mini"),
+        model: openai("gpt-4o"),
         schema: ACTION_SCHEMA,
-        system: "Du bist Petulia, die herzliche digitale Assistentin von Petul. Leite die API Aktion ab und schreibe den perfekten Antwortentwurf.",
+        system: "Du bist Petulia, die herzliche digitale Assistentin von Petul. Leite die API Aktion ab und schreibe den perfekten Antwortentwurf. Die Aktion wird erst nach menschlicher Freigabe ausgeführt.",
         prompt,
         temperature: 0.1,
     });

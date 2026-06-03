@@ -23,6 +23,7 @@ import {
     identifyHotel,
     query3RPMS,
     getReservationByCode,
+    searchReservationsByEmail,
     getInventory,
     getHotelSettings,
 } from "./utils/threerpms";
@@ -163,12 +164,26 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
 
         if (resNum && hotelApiKey) {
             try {
-                console.log(`   - [3RPMS] Suche Reservierung: ${resNum}`);
+                console.log(`   - [3RPMS] Suche Reservierung per Code: ${resNum}`);
                 const res = await getReservationByCode(hotelApiKey, resNum);
                 threeRpmsData = res?.reservations?.edges?.[0]?.node || null;
                 if (threeRpmsData) console.log(`   ✅ Reservierung gefunden: ${threeRpmsData.code}`);
             } catch (err: any) {
                 console.warn(`   ⚠️  [3RPMS] Reservierungs-Abruf fehlgeschlagen: ${err.message}`);
+            }
+        }
+
+        // 4b. Fallback: Suche per Absender-E-Mail (wenn kein Code gefunden)
+        if (!threeRpmsData && hotelApiKey && mailData.absender) {
+            try {
+                console.log(`   - [3RPMS] Kein Code — suche per E-Mail: ${mailData.absender}`);
+                const emailResult = await searchReservationsByEmail(hotelApiKey, mailData.absender);
+                if (emailResult && (emailResult.client || emailResult.roomStays?.length > 0)) {
+                    threeRpmsData = emailResult;
+                    console.log(`   ✅ Gast per E-Mail gefunden: ${emailResult.client?.firstname || emailResult.client?.name || "unbekannt"} (${emailResult.roomStays?.length || 0} Aufenthalte)`);
+                }
+            } catch (err: any) {
+                console.warn(`   ⚠️  [3RPMS] E-Mail-Suche fehlgeschlagen: ${err.message}`);
             }
         }
 

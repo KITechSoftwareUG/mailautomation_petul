@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-    ArrowRight, Minimize2, Layers, CheckCircle2, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check, ChevronRight, Sparkles
+    ArrowRight, Minimize2, Layers, CheckCircle2, Terminal, BrainCircuit, PenTool, Database, MessageSquare, Copy, Check, ChevronRight, Sparkles, RefreshCw
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -111,7 +111,7 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
     const [selectedId, setSelectedId] = useState<string | null>(
         emails.find((e) => e.status === "processing")?.id || emails[0]?.id || null
     );
-    const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting">("idle");
+    const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting" | "regenerating">("idle");
     const [isMinimized, setIsMinimized] = useState(false);
     const [step, setStep] = useState(0);
     const [editedDraft, setEditedDraft] = useState<string>("");
@@ -182,6 +182,30 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
         await navigator.clipboard.writeText(editedDraft);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
+    };
+
+    const handleRegenerate = async () => {
+        if (!currentMail) return;
+        setActionStatus("regenerating");
+        setStep(0);
+        try {
+            await supabase.from("emails").update({
+                status: "new",
+                intent: null,
+                api_action: null,
+                draft_reply: null,
+                agent_logs: {
+                    ...(currentMail.agent_logs || {}),
+                    target_hotel: currentMail.agent_logs?.target_hotel || null,
+                    ai_force_hotel: currentMail.agent_logs?.ai_force_hotel || null,
+                },
+            }).eq("id", currentMail.id);
+            setEditedDraft("");
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            router.refresh();
+        } finally {
+            setActionStatus("idle");
+        }
     };
 
     const handleAction = async (action: "approve" | "reject") => {
@@ -348,6 +372,17 @@ export function EmailFeed({ emails }: { emails: Email[] }) {
                                                     </div>
                                                 </div>
                                                 <div className="flex items-center gap-2">
+                                                    {(currentMail.status === "processing" || currentMail.status === "ignored") && (
+                                                        <button
+                                                            onClick={handleRegenerate}
+                                                            disabled={actionStatus !== "idle"}
+                                                            title="KI-Antwort neu generieren"
+                                                            className="flex items-center gap-1.5 px-2.5 py-1 border border-black/10 hover:bg-[#6082B6] hover:text-white hover:border-[#6082B6] text-black/30 text-[8px] font-black uppercase tracking-widest transition-all disabled:opacity-20"
+                                                        >
+                                                            <RefreshCw className={`w-3 h-3 ${actionStatus === "regenerating" ? "animate-spin" : ""}`} />
+                                                            {actionStatus === "regenerating" ? "Lädt..." : "Neu"}
+                                                        </button>
+                                                    )}
                                                     <button
                                                         onClick={handleCopy}
                                                         disabled={!editedDraft || step < 4}

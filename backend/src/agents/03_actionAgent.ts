@@ -1,69 +1,212 @@
-import { generateObject } from "ai";
+import { generateText, tool } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import * as dotenv from "dotenv";
 import { getActionPrompt } from "./prompts";
+import {
+    getReservationByCode,
+    searchReservationsByEmail,
+    getInventory,
+} from "../utils/threerpms";
 
 dotenv.config();
 
-const openai = createOpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export const ACTION_SCHEMA = z.object({
-    reflexion_loop_gedanken: z.array(z.string()).describe("Iterativer Denkprozess (Loop): Prüfe deinen Entwurf mehrfach kritisch. 1. Was will der Gast? 2. Haben wir alle API-Fähigkeiten genutzt? 3. Wie perfektionieren wir die Antwort?"),
-    api_action: z.string().describe("Name der gewünschten API Aktion in 3RPMS (z.B. 'updateRoomStay' oder 'none')"),
-    graphql_mutation: z.string().nullable().describe("Optional: Der exakte GraphQL Mutation/Query String, der ausgeführt werden soll, basierend auf der Knowledge Base."),
-    graphql_variables: z.string().nullable().describe("Optional: Als JSON formatierter Text-String mit den Variablen für die GraphQL Query."),
-    antwort_entwurf: z.string().describe("Der fertige, perfektionierte Antwortentwurf für den Gast.")
-});
+// Rückgabe des Action-Agents — enthält sowohl den Entwurf als auch die gesammelten PMS-Daten
+export interface ActionResult {
+    api_action: string;
+    graphql_mutation: string | null;
+    graphql_variables: string | null;
+    antwort_entwurf: string;
+    threeRpmsData: any | null;
+    inventoryData: any | null;
+    tool_calls_made: string[];
+}
 
 export async function determineAction(
     intentData: any,
     policyData: any,
     mailData: any,
-    threeRpmsData: any = null,
-    inventoryData: any = null,
+    hotelApiKey: string = "",
     productCatalog: any = null,
-    execution_error: string | null = null
-) {
-    const inventorySection = inventoryData
-        ? `\n### VERFÜGBARKEITS-DATEN AUS 3RPMS (Für Reservierungsanfragen):\n${JSON.stringify(inventoryData, null, 2)}\n`
-        : `\n### VERFÜGBARKEITS-DATEN: Nicht verfügbar — sage dem Gast, dass eine Kollegin die genaue Verfügbarkeit prüft.\n`;
+    execution_error: string | null = null,
+): Promise<ActionResult> {
 
     const productSection = productCatalog
-        ? `\n### PRODUKT-KATALOG (Für createExternalSale — exakte IDs verwenden):\n${JSON.stringify(productCatalog, null, 2)}\n`
-        : "";
+        ? `\nVERFÜGBARE ZUSATZLEISTUNGEN (IDs für createExternalSale):\n${JSON.stringify(productCatalog, null, 2)}\n`
+        : "\nZUSATZLEISTUNGEN: Nicht geladen — bei Bedarf an Empfang weiterleiten.\n";
 
-    const prompt = `
-${getActionPrompt()}
+    const hasPmsAccess = !!hotelApiKey;
 
-MAIL DES GASTES:
+    // ─── Agentic Loop ────────────────────────────────────────────────────────────
+    // Die KI entscheidet selbst, welche Tools sie wann aufruft.
+    // Erst nach der Datensammlung ruft sie "antwort_erstellen" auf.
+
+    const result = await generateText({
+        model: openai("gpt-4o"),
+        maxSteps: 6,
+
+        system: `${getActionPrompt()}
+
+${productSection}
+
+${execution_error ? `⚠️ VORHERIGER FEHLER BEIM API-AUFRUF: "${execution_error}" — Korrigiere deine Anfrage.\n` : ""}
+
+WICHTIG — REIHENFOLGE:
+1. Rufe zuerst die passenden Lookup-Tools auf (reservierung_suchen, gast_suchen, verfuegbarkeit_pruefen)
+2. Werte die Ergebnisse aus
+3. Rufe am Ende "antwort_erstellen" auf — dieser Schritt ist PFLICHT
+Du darfst mehrere Tools hintereinander aufrufen. maxSteps=6 erlaubt dir Spielraum.`,
+
+        prompt: `Bearbeite diese E-Mail aus dem Petul-Postfach:
+
+ABSENDER: ${mailData.absender}
+BETREFF: ${mailData.betreff}
+PMS-ZUGANG: ${hasPmsAccess ? "✅ Verfügbar — nutze die Tools!" : "❌ Nicht verfügbar für dieses Hotel"}
+
+MAIL-INHALT:
 ${mailData.body_text}
 
-ANALYSE (Intent):
-${JSON.stringify(intentData, null, 2)}
+INTENT-ANALYSE:
+- Kategorie: ${intentData.kategorie}
+- Gast-Name (aus Mail): ${intentData.extracted_entities?.gast_name || "nicht erkannt"}
+- Reservierungsnummer: ${intentData.extracted_entities?.reservierungsnummer || "keine genannt"}
+- Gewünschte Anreise: ${intentData.extracted_entities?.ankunft || "keine"}
+- Gewünschte Abreise: ${intentData.extracted_entities?.abreise || "keine"}
+- Personen: ${intentData.extracted_entities?.personenanzahl || "keine Angabe"}
 
-RICHTLINIEN-ENTSCHEIDUNG (Policy):
-${JSON.stringify(policyData, null, 2)}
+RICHTLINIEN-ENTSCHEIDUNG:
+- Anfrage erlaubt: ${policyData.policy_passed ? "Ja" : "Nein"}
+- Grund: ${policyData.policy_decision_reason}
 
-ECHTZEIT-DATEN AUS 3RPMS (Reservierung):
-${threeRpmsData ? JSON.stringify(threeRpmsData, null, 2) : "Keine Live-Daten gefunden."}
-${inventorySection}${productSection}
-${execution_error ? `
-⚠️ VORHERIGER FEHLER BEIM API-AUFRUF:
-"${execution_error}"
+Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "antwort_erstellen".`,
 
-Bitte analysiere den Fehler, korrigiere deine Mutation/Query und versuche es erneut oder erkläre dem Gast, warum es nicht geklappt hat.
-` : ""}`;
+        tools: {
+            // ── Tool 1: Reservierung per Code ─────────────────────────────────────
+            reservierung_suchen: tool({
+                description:
+                    "Lädt eine Reservierung anhand des Buchungscodes aus dem PMS. " +
+                    "Verwenden wenn der Gast einen Reservierungscode genannt hat.",
+                parameters: z.object({
+                    code: z.string().describe("Buchungscode / Reservierungsnummer aus der E-Mail"),
+                }),
+                execute: async ({ code }) => {
+                    if (!hotelApiKey) return { fehler: "Kein PMS-Schlüssel für dieses Hotel" };
+                    try {
+                        const res = await getReservationByCode(hotelApiKey, code);
+                        const node = res?.reservations?.edges?.[0]?.node;
+                        if (!node) return { nicht_gefunden: true, gesuchter_code: code };
+                        return node;
+                    } catch (err: any) {
+                        return { fehler: err.message, gesuchter_code: code };
+                    }
+                },
+            }),
 
-    const { object } = await generateObject({
-        model: openai("gpt-4o"),
-        schema: ACTION_SCHEMA,
-        system: "Du bist Petulia, die herzliche digitale Assistentin von Petul. Leite die API Aktion ab und schreibe den perfekten Antwortentwurf. Die Aktion wird erst nach menschlicher Freigabe ausgeführt.",
-        prompt,
-        temperature: 0.1,
+            // ── Tool 2: Gast per E-Mail suchen ───────────────────────────────────
+            gast_suchen: tool({
+                description:
+                    "Sucht einen Gast und seine aktuellen/zukünftigen Buchungen im PMS anhand der E-Mail-Adresse. " +
+                    "Verwenden wenn KEIN Reservierungscode vorhanden ist.",
+                parameters: z.object({
+                    email: z.string().describe("E-Mail-Adresse des Gastes (Absender)"),
+                }),
+                execute: async ({ email }) => {
+                    if (!hotelApiKey) return { fehler: "Kein PMS-Schlüssel für dieses Hotel" };
+                    try {
+                        const data = await searchReservationsByEmail(hotelApiKey, email);
+                        if (!data) return { nicht_gefunden: true, gesuchte_email: email };
+                        return data;
+                    } catch (err: any) {
+                        return { fehler: err.message };
+                    }
+                },
+            }),
+
+            // ── Tool 3: Verfügbarkeit prüfen ─────────────────────────────────────
+            verfuegbarkeit_pruefen: tool({
+                description:
+                    "Prüft die Zimmerverfügbarkeit für einen Zeitraum. " +
+                    "PFLICHT bei Reservierungsanfragen, bevor eine Bestätigung zugesagt wird!",
+                parameters: z.object({
+                    anreise: z.string().describe("Anreisedatum YYYY-MM-DD"),
+                    abreise: z.string().describe("Abreisedatum YYYY-MM-DD"),
+                }),
+                execute: async ({ anreise, abreise }) => {
+                    if (!hotelApiKey) return { fehler: "Kein PMS-Schlüssel für dieses Hotel" };
+                    try {
+                        return await getInventory(hotelApiKey, anreise, abreise);
+                    } catch (err: any) {
+                        return { fehler: err.message };
+                    }
+                },
+            }),
+
+            // ── Tool 4: Finale Antwort erstellen (PFLICHTSCHRITT) ─────────────────
+            antwort_erstellen: tool({
+                description:
+                    "Legt die finale Antwort und die geplante PMS-Aktion fest. " +
+                    "MUSS immer als LETZTER Schritt aufgerufen werden.",
+                parameters: z.object({
+                    api_action: z.string().describe(
+                        "Name der geplanten PMS-Aktion: 'none' | 'updateRoomStay' | " +
+                        "'createExternalSale' | 'Manuelle Stornierung durch Empfang' | " +
+                        "'importReservation' | etc."
+                    ),
+                    graphql_mutation: z.string().nullable().describe(
+                        "Vollständiger GraphQL Mutation-String. null wenn keine Mutation nötig."
+                    ),
+                    graphql_variables: z.string().nullable().describe(
+                        "JSON-String mit den Variablen für die Mutation. null wenn keine Mutation."
+                    ),
+                    antwort_entwurf: z.string().describe(
+                        "Vollständiger, versandfertiger Antwortentwurf auf Deutsch. " +
+                        "Beginnt mit der Anrede, endet mit 'Herzliche Grüße, Ihre Petulia & das Petul-Team'."
+                    ),
+                }),
+                execute: async (params) => params,
+            }),
+        },
     });
 
-    return object;
+    // ─── Tool-Ergebnisse sammeln ──────────────────────────────────────────────────
+
+    const toolResults = result.steps.flatMap((s) => (s as any).toolResults ?? []);
+
+    const draftResult = toolResults.find((r: any) => r.toolName === "antwort_erstellen")
+        ?.result as ActionResult | undefined;
+
+    const pmsResult =
+        toolResults.find((r: any) => r.toolName === "reservierung_suchen")?.result ||
+        toolResults.find((r: any) => r.toolName === "gast_suchen")?.result ||
+        null;
+
+    const inventoryResult =
+        toolResults.find((r: any) => r.toolName === "verfuegbarkeit_pruefen")?.result || null;
+
+    const calledTools = toolResults
+        .filter((r: any) => r.toolName !== "antwort_erstellen")
+        .map((r: any) => r.toolName);
+
+    // Fallback wenn KI "antwort_erstellen" nicht aufgerufen hat
+    const draft = draftResult ?? {
+        api_action: "none",
+        graphql_mutation: null,
+        graphql_variables: null,
+        antwort_entwurf:
+            result.text ||
+            "Vielen Dank für Ihre Nachricht. Wir werden Ihre Anfrage umgehend prüfen " +
+            "und uns schnellstmöglich bei Ihnen melden.\n\nHerzliche Grüße, Ihre Petulia & das Petul-Team",
+    };
+
+    return {
+        api_action: draft.api_action,
+        graphql_mutation: draft.graphql_mutation,
+        graphql_variables: draft.graphql_variables,
+        antwort_entwurf: draft.antwort_entwurf,
+        threeRpmsData: pmsResult,
+        inventoryData: inventoryResult,
+        tool_calls_made: calledTools,
+    };
 }

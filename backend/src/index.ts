@@ -4,7 +4,7 @@
  * Ablauf bei eingehender Mail:
  * 1. Parsen & normalisieren
  * 2. In Supabase speichern (RPC process_incoming_email)
- * 3. KI-Pipeline: Intent → 3RPMS Lookup + Inventory → Policy → Action (Plan)
+ * 3. KI-Pipeline: Intent → Policy → Action Agent (lädt PMS-Daten via Tools selbst)
  * 4. Ergebnis (inkl. geplanter Mutation) in Supabase schreiben, Status: "processing"
  * 5. Mensch genehmigt im Dashboard → Status: "approved"
  * 6. processOutbound führt Mutation aus, sendet E-Mail, Status: "sent"
@@ -22,9 +22,6 @@ import {
     HOTELS,
     identifyHotel,
     query3RPMS,
-    getReservationByCode,
-    searchReservationsByEmail,
-    getInventory,
     getHotelSettings,
 } from "./utils/threerpms";
 import { getSignature } from "./utils/signatures";
@@ -164,54 +161,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             : "unbekannt";
         console.log(`   → Hotel: ${resolvedHotel} (Quelle: ${hotelSource})`);
 
-        // 4. 3RPMS: Reservierungsdaten laden
-        let threeRpmsData = null;
-        const resNum = intentData.extracted_entities.reservierungsnummer;
-
-        if (resNum && hotelApiKey) {
-            try {
-                console.log(`   - [3RPMS] Suche Reservierung per Code: ${resNum}`);
-                const res = await getReservationByCode(hotelApiKey, resNum);
-                threeRpmsData = res?.reservations?.edges?.[0]?.node || null;
-                if (threeRpmsData) console.log(`   ✅ Reservierung gefunden: ${threeRpmsData.code}`);
-            } catch (err: any) {
-                console.warn(`   ⚠️  [3RPMS] Reservierungs-Abruf fehlgeschlagen: ${err.message}`);
-            }
-        }
-
-        // 4b. Fallback: Suche per Absender-E-Mail (wenn kein Code gefunden)
-        if (!threeRpmsData && hotelApiKey && mailData.absender) {
-            try {
-                console.log(`   - [3RPMS] Kein Code — suche per E-Mail: ${mailData.absender}`);
-                const emailResult = await searchReservationsByEmail(hotelApiKey, mailData.absender);
-                if (emailResult && (emailResult.client || emailResult.roomStays?.length > 0)) {
-                    threeRpmsData = emailResult;
-                    console.log(`   ✅ Gast per E-Mail gefunden: ${emailResult.client?.firstname || emailResult.client?.name || "unbekannt"} (${emailResult.roomStays?.length || 0} Aufenthalte)`);
-                }
-            } catch (err: any) {
-                console.warn(`   ⚠️  [3RPMS] E-Mail-Suche fehlgeschlagen: ${err.message}`);
-            }
-        }
-
-        // 5. 3RPMS: Verfügbarkeit laden (nur bei Reservierungsanfragen mit Daten)
-        let inventoryData = null;
-        if (intentData.kategorie === "Reservierungsanfrage" && hotelApiKey) {
-            const ankunft = intentData.extracted_entities.ankunft;
-            const abreise = intentData.extracted_entities.abreise;
-            if (ankunft && abreise) {
-                try {
-                    console.log(`   - [3RPMS] Verfügbarkeit prüfen: ${ankunft} – ${abreise}`);
-                    inventoryData = await getInventory(hotelApiKey, ankunft, abreise);
-                    console.log(`   ✅ Verfügbarkeitsdaten geladen`);
-                } catch (err: any) {
-                    console.warn(`   ⚠️  [3RPMS] Verfügbarkeits-Abruf fehlgeschlagen: ${err.message}`);
-                }
-            }
-        }
-
-        // 6. Agent 2: Policy Check
+        // 4. Agent 2: Policy Check (kein PMS-Pre-Fetch — Action Agent lädt Daten selbst via Tools)
         console.log("   - [Step 2] Policy Agent prüft Richtlinien...");
-        const policyData = await checkPolicy(intentData, mailData.body_text, threeRpmsData);
+        const policyData = await checkPolicy(intentData, mailData.body_text);
 
         if (policyData.is_spam) {
             await supabase.from("emails").update({
@@ -223,20 +175,22 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             return;
         }
 
-        // 7. Agent 3: Action planen (Mutation wird NICHT ausgeführt – erst nach menschlicher Freigabe)
-        console.log("   - [Step 3] Action Agent plant Aktion und formuliert Antwort...");
-        const productCatalog = hotel ? (hotelProductsCache[hotel.id] ?? null) : null;
+        // 5. Agent 3: Action Agent mit Tool-Calling — lädt PMS-Daten selbst
+        console.log("   - [Step 3] Action Agent (mit Tools) sammelt PMS-Daten und formuliert Antwort...");
+        const productCatalog = hotel ? (hotelProductsCache[hotel?.id ?? ""] ?? null) : null;
         const finalActionData = await determineAction(
             intentData,
             policyData,
             mailData,
-            threeRpmsData,
-            inventoryData,
-            productCatalog
+            hotelApiKey,
+            productCatalog,
         );
         console.log(`   → Geplante Aktion: ${finalActionData.api_action}`);
+        if (finalActionData.tool_calls_made?.length > 0) {
+            console.log(`   → Tools aufgerufen: ${finalActionData.tool_calls_made.join(", ")}`);
+        }
 
-        // 8. DB Update – Status "processing", Mensch muss im Dashboard genehmigen
+        // 6. DB Update – Status "processing", Mensch muss im Dashboard genehmigen
         const { error: updateError } = await supabase.from("emails").update({
             status: "processing",
             intent: intentData.kategorie,
@@ -248,8 +202,8 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 intentData,
                 policyData,
                 actionData: finalActionData,
-                threeRpmsData,
-                inventoryData,
+                threeRpmsData: finalActionData.threeRpmsData,
+                inventoryData: finalActionData.inventoryData,
                 target_hotel: resolvedHotel,
                 hotel_source: hotelSource,
                 forward_target: mailData.forward_target || null,

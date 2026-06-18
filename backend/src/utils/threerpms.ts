@@ -262,45 +262,50 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
   const clientId = clientEdges[0]?.node?.id;
   if (!clientId) return null;
 
-  // Schritt 2: Aktuelle/zukünftige room_stays für diesen Client suchen
+  // Schritt 2: Reservierungen für diesen Client suchen
   const today = new Date().toISOString().split("T")[0];
-  const staysQuery = `
-    query GetClientRoomStays($filter: RoomStayFilter) {
-      room_stays(filter: $filter, first: 5) {
+  const reservationsQuery = `
+    query GetClientReservations($clientId: ID!, $today: Date!) {
+      reservations(
+        filter: { client: { id: { eq: $clientId } }, reservation_to: { ge: $today } }
+        first: 5
+      ) {
         edges {
           node {
             id
-            reservation_from
-            reservation_to
-            roomName
-            gross
-            check_in
-            check_out
-            selfcheckout_enabled
-            selfcheckout_url
-            mealNotes
-            guestMessage
-            rateCode
-            first_guest {
-              id
-              firstname
-              lastname
-              email
-            }
-            category {
-              id
-              name
-            }
-            reservation {
-              id
-              code
-              status
-              selfcheckinStatus
-              reservationFrom
-              reservationTo
-              totalAmount
-              openAmount
-              groupName
+            code
+            status
+            selfcheckinStatus
+            reservationFrom
+            reservationTo
+            totalAmount
+            openAmount
+            groupName
+            roomStays {
+              edges {
+                node {
+                  id
+                  reservation_from
+                  reservation_to
+                  roomName
+                  gross
+                  check_in
+                  check_out
+                  mealNotes
+                  guestMessage
+                  rateCode
+                  first_guest {
+                    id
+                    firstname
+                    lastname
+                    email
+                  }
+                  category {
+                    id
+                    name
+                  }
+                }
+              }
             }
           }
         }
@@ -308,13 +313,23 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
     }
   `;
 
-  const staysResult = await query3RPMS<any>(apiKey, staysQuery, {
-    filter: { reservation_to: { ge: today } },
-  });
+  let reservations: any[] = [];
+  try {
+    const resResult = await query3RPMS<any>(apiKey, reservationsQuery, {
+      clientId,
+      today,
+    });
+    reservations = resResult?.reservations?.edges?.map((e: any) => e.node) || [];
+  } catch {
+    // Fallback: wenn Reservierungs-Filter nicht unterstützt, gib nur Client zurück
+  }
 
   return {
     client: clientEdges[0]?.node,
-    roomStays: staysResult?.room_stays?.edges?.map((e: any) => e.node) || [],
+    reservations,
+    roomStays: reservations.flatMap((r: any) =>
+      (r.roomStays?.edges || []).map((e: any) => ({ ...e.node, reservation: r }))
+    ),
   };
 }
 

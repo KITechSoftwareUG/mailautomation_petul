@@ -93,6 +93,7 @@ const transporter = nodemailer.createTransport({
 // ─── Hotel Product Cache (einmalig beim Start geladen) ────────────────────────
 
 const hotelProductsCache: Record<string, any> = {};
+const pipelineInProgress = new Set<string>(); // verhindert doppelte Verarbeitung
 
 async function warmProductCache() {
     console.log("🗂️  Produkt-Cache: Lade Hotel-Settings aus 3RPMS...");
@@ -111,6 +112,11 @@ async function warmProductCache() {
 // ─── KI Pipeline ──────────────────────────────────────────────────────────────
 
 async function runAiPipeline(mailData: any, threadId: string | null) {
+    if (pipelineInProgress.has(mailData.mail_id)) {
+        console.log(`⏭️  Pipeline läuft bereits für ${mailData.mail_id} – überspringe`);
+        return;
+    }
+    pipelineInProgress.add(mailData.mail_id);
     console.log(`🤖 KI Pipeline startet für mail_id: ${mailData.mail_id}`);
 
     try {
@@ -219,7 +225,7 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
 
         // 7. Agent 3: Action planen (Mutation wird NICHT ausgeführt – erst nach menschlicher Freigabe)
         console.log("   - [Step 3] Action Agent plant Aktion und formuliert Antwort...");
-        const productCatalog = hotelProductsCache[hotel.id] || null;
+        const productCatalog = hotel ? (hotelProductsCache[hotel.id] ?? null) : null;
         const finalActionData = await determineAction(
             intentData,
             policyData,
@@ -257,6 +263,8 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
     } catch (err: any) {
         console.error(`❌ Pipeline Fehler (${mailData.mail_id}):`, err.message);
         await supabase.from("emails").update({ status: "failed" }).eq("mail_id", mailData.mail_id);
+    } finally {
+        pipelineInProgress.delete(mailData.mail_id);
     }
 }
 
@@ -319,7 +327,7 @@ async function processOutbound() {
                         (mail as any).forward_target || "",
                         (mail.agent_logs as any)?.target_hotel || null
                     );
-                    if (hotel.key) {
+                    if (hotel?.key) {
                         try {
                             const variables = typeof actionData.graphql_variables === "string"
                                 ? JSON.parse(actionData.graphql_variables)

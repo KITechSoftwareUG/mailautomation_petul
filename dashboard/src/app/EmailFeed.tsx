@@ -140,48 +140,53 @@ function HotelSelectorHeader({ hotelName, onUpdateHotel }: { hotelName: string; 
 // ─── PMS Data Extractor ────────────────────────────────────────────────────────
 // Handles both: direct reservation (via code) and email-search result (client + reservations)
 
+function guestDisplayName(client: any): string {
+    if (!client) return "—";
+    const full = [client.firstname, client.lastname].filter(Boolean).join(" ");
+    return full || client.email || "—";
+}
+
 function extractPmsDisplayData(threeRpmsData: any) {
     if (!threeRpmsData) return null;
 
-    // Format A: direkte Reservierung (via getReservationByCode → reservations.edges[0].node)
-    if (threeRpmsData.code || threeRpmsData.reservationFrom) {
-        const guest = threeRpmsData.client || threeRpmsData.first_guest;
+    // Format A: direkte Reservierung (via getReservationByCode)
+    // Struktur: { id, code, status, client, roomStays: { edges: [{ node }] } }
+    if (threeRpmsData.code) {
         const firstStay = threeRpmsData.roomStays?.edges?.[0]?.node;
         return {
-            guestName: [guest?.firstname, guest?.lastname || guest?.name].filter(Boolean).join(" ") || "—",
-            code: threeRpmsData.code || "—",
-            from: firstStay?.reservation_from || threeRpmsData.reservationFrom || "—",
-            to:   firstStay?.reservation_to   || threeRpmsData.reservationTo   || "—",
+            guestName: guestDisplayName(threeRpmsData.client || threeRpmsData.first_guest),
+            code:   threeRpmsData.code || "—",
+            from:   firstStay?.reservation_from || "—",
+            to:     firstStay?.reservation_to   || "—",
             status: threeRpmsData.status || "Aktive Buchung",
-            room: firstStay?.roomName || "—",
+            room:   firstStay?.roomName || "—",
         };
     }
 
-    // Format B: E-Mail-Suche (client + roomStays[] oder reservations[])
+    // Format B: E-Mail-Suche (client + roomStays[])
     const client = threeRpmsData.client;
-    const firstRes = threeRpmsData.reservations?.[0] || threeRpmsData.roomStays?.[0];
-    const firstStay = threeRpmsData.roomStays?.[0];
     if (client) {
+        const firstStay = threeRpmsData.roomStays?.[0];
+        const res = firstStay?.reservation;
         return {
-            guestName: [client.firstname, client.lastname || client.name].filter(Boolean).join(" ") || "—",
-            code: firstRes?.code || firstStay?.reservation?.code || "—",
-            from: firstStay?.reservation_from || firstRes?.reservationFrom || "—",
-            to:   firstStay?.reservation_to   || firstRes?.reservationTo   || "—",
-            status: firstRes?.status || firstStay?.reservation?.status || "Gefunden",
-            room: firstStay?.roomName || "—",
+            guestName: guestDisplayName(client),
+            code:   res?.code || "—",
+            from:   firstStay?.reservation_from || res?.reservationFrom || "—",
+            to:     firstStay?.reservation_to   || res?.reservationTo   || "—",
+            status: res?.status || "Gefunden",
+            room:   firstStay?.roomName || "—",
         };
     }
 
     // Format C: room_stay direkt
     if (threeRpmsData.reservation_from || threeRpmsData.roomName) {
-        const g = threeRpmsData.first_guest;
         return {
-            guestName: g ? `${g.firstname || ""} ${g.lastname || ""}`.trim() : "—",
-            code: threeRpmsData.reservation?.code || "—",
-            from: threeRpmsData.reservation_from || "—",
-            to:   threeRpmsData.reservation_to   || "—",
+            guestName: guestDisplayName(threeRpmsData.first_guest),
+            code:   threeRpmsData.reservation?.code || "—",
+            from:   threeRpmsData.reservation_from || "—",
+            to:     threeRpmsData.reservation_to   || "—",
             status: threeRpmsData.reservation?.status || "—",
-            room: threeRpmsData.roomName || "—",
+            room:   threeRpmsData.roomName || "—",
         };
     }
 
@@ -706,17 +711,20 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     </div>
                                                 )}
 
-                                                {/* Policy Warning */}
-                                                {currentMail.policy_decision_reason && !currentMail.policy_decision_allowed && (
-                                                    <div className="bg-[#E2001A]/5 border border-[#E2001A]/20 p-3">
+                                                {/* Policy Hinweis (nur wenn Richtlinie verletzt) */}
+                                                {currentMail.policy_decision_reason && currentMail.policy_decision_allowed === false && (
+                                                    <div className="bg-[#F39200]/8 border border-[#F39200]/25 p-3">
                                                         <div className="flex items-center gap-1.5 mb-1.5">
-                                                            <AlertTriangle className="w-3 h-3 text-[#E2001A]" />
-                                                            <span className="text-[8px] font-black text-[#E2001A] uppercase tracking-widest">
-                                                                Richtlinien-Warnung
+                                                            <AlertTriangle className="w-3 h-3 text-[#F39200]" />
+                                                            <span className="text-[8px] font-black text-[#F39200] uppercase tracking-widest">
+                                                                Richtlinien-Hinweis
                                                             </span>
                                                         </div>
-                                                        <div className="text-[10px] text-[#E2001A]/80 leading-snug">
+                                                        <div className="text-[10px] text-black/60 leading-snug mb-2">
                                                             {currentMail.policy_decision_reason}
+                                                        </div>
+                                                        <div className="text-[8px] text-[#F39200] font-bold uppercase tracking-wide">
+                                                            ↳ Entwurf erklärt dies dem Gast
                                                         </div>
                                                     </div>
                                                 )}
@@ -806,17 +814,6 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         </div>
                                                     )}
 
-                                                {/* Policy OK Info */}
-                                                {currentMail.policy_decision_allowed && currentMail.policy_decision_reason && (
-                                                    <div className="p-3 border border-black/5 bg-white">
-                                                        <div className="text-[8px] uppercase text-black/20 font-black tracking-widest mb-1">
-                                                            Richtlinien-Check
-                                                        </div>
-                                                        <div className="text-[10px] text-black/50 leading-snug">
-                                                            {currentMail.policy_decision_reason}
-                                                        </div>
-                                                    </div>
-                                                )}
 
                                                 {/* Reflexionen der KI (optional, ausblendbar) */}
                                                 {currentMail.agent_logs?.actionData?.reflexion_loop_gedanken?.length > 0 && (

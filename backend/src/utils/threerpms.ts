@@ -154,6 +154,8 @@ export async function getRoomStays(apiKey: string, filter: any = {}) {
  * Gibt vollständige Reservierungsdaten inkl. aller Zimmeraufenthalte und Gästedaten zurück.
  */
 export async function getReservationByCode(apiKey: string, code: string) {
+  // Nur bewährte Felder — camelCase-Felder (reservationFrom etc.) existieren nicht auf
+  // dem Reservation-Typ. Datum/Zimmer-Info kommen aus den roomStays (snake_case bestätigt).
   const query = `
     query GetReservation($code: String!) {
       reservations(filter: { code: { eq: $code } }, first: 1) {
@@ -162,13 +164,6 @@ export async function getReservationByCode(apiKey: string, code: string) {
             id
             code
             status
-            selfcheckinStatus
-            reservationFrom
-            reservationTo
-            totalAmount
-            openAmount
-            cancelledAt
-            groupName
             client {
               id
               ... on Person {
@@ -177,12 +172,8 @@ export async function getReservationByCode(apiKey: string, code: string) {
                 email
                 telephone
                 mobile
-                language { code }
-                stayPreferences
-                mealPreferences
               }
               ... on Company {
-                name
                 email
                 telephone
               }
@@ -200,7 +191,6 @@ export async function getReservationByCode(apiKey: string, code: string) {
                   selfcheckout_enabled
                   selfcheckout_url
                   mealNotes
-                  maidNotes
                   guestMessage
                   rateCode
                   first_guest {
@@ -232,6 +222,7 @@ export async function getReservationByCode(apiKey: string, code: string) {
  */
 export async function searchReservationsByEmail(apiKey: string, email: string) {
   // Schritt 1: Client anhand E-Mail finden
+  // Company hat kein "name"-Feld — nur Person-Felder und "email" für Company
   const clientQuery = `
     query FindClientByEmail($filter: ClientFilter) {
       clients(filter: $filter, first: 5) {
@@ -244,7 +235,6 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
               email
             }
             ... on Company {
-              name
               email
             }
           }
@@ -262,50 +252,44 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
   const clientId = clientEdges[0]?.node?.id;
   if (!clientId) return null;
 
-  // Schritt 2: Reservierungen für diesen Client suchen
+  // Schritt 2: Aktuelle/zukünftige room_stays dieses Clients
+  // Nutze nur bestätigte snake_case Felder; kein client-Filter (nicht von API unterstützt)
+  // → filtern nach reservation_to >= heute, dann clientId clientseitig abgleichen
   const today = new Date().toISOString().split("T")[0];
-  const reservationsQuery = `
-    query GetClientReservations($clientId: ID!, $today: Date!) {
-      reservations(
-        filter: { client: { id: { eq: $clientId } }, reservation_to: { ge: $today } }
-        first: 5
-      ) {
+  const staysQuery = `
+    query GetClientRoomStays($filter: RoomStayFilter) {
+      room_stays(filter: $filter, first: 10) {
         edges {
           node {
             id
-            code
-            status
-            selfcheckinStatus
-            reservationFrom
-            reservationTo
-            totalAmount
-            openAmount
-            groupName
-            roomStays {
-              edges {
-                node {
-                  id
-                  reservation_from
-                  reservation_to
-                  roomName
-                  gross
-                  check_in
-                  check_out
-                  mealNotes
-                  guestMessage
-                  rateCode
-                  first_guest {
-                    id
-                    firstname
-                    lastname
-                    email
-                  }
-                  category {
-                    id
-                    name
-                  }
-                }
-              }
+            reservation_from
+            reservation_to
+            roomName
+            gross
+            check_in
+            check_out
+            mealNotes
+            guestMessage
+            rateCode
+            first_guest {
+              id
+              firstname
+              lastname
+              email
+            }
+            category {
+              id
+              name
+            }
+            reservation {
+              id
+              code
+              status
+              reservationFrom
+              reservationTo
+              totalAmount
+              openAmount
+              groupName
             }
           }
         }
@@ -313,23 +297,24 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
     }
   `;
 
-  let reservations: any[] = [];
+  let roomStays: any[] = [];
   try {
-    const resResult = await query3RPMS<any>(apiKey, reservationsQuery, {
-      clientId,
-      today,
+    const staysResult = await query3RPMS<any>(apiKey, staysQuery, {
+      filter: { reservation_to: { ge: today } },
     });
-    reservations = resResult?.reservations?.edges?.map((e: any) => e.node) || [];
+    // Nur Stays behalten, bei denen first_guest.email zur Suche passt
+    const allStays = staysResult?.room_stays?.edges?.map((e: any) => e.node) || [];
+    roomStays = allStays.filter((s: any) =>
+      s.first_guest?.email?.toLowerCase() === email.toLowerCase()
+    );
   } catch {
-    // Fallback: wenn Reservierungs-Filter nicht unterstützt, gib nur Client zurück
+    // Fallback: gib nur Client zurück
   }
 
   return {
     client: clientEdges[0]?.node,
-    reservations,
-    roomStays: reservations.flatMap((r: any) =>
-      (r.roomStays?.edges || []).map((e: any) => ({ ...e.node, reservation: r }))
-    ),
+    reservations: [],
+    roomStays,
   };
 }
 

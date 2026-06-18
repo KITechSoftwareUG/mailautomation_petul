@@ -1,4 +1,4 @@
-import { generateText, tool } from "ai";
+import { generateText, tool, zodSchema } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import * as dotenv from "dotenv";
@@ -88,9 +88,9 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Lädt eine Reservierung anhand des Buchungscodes aus dem PMS. " +
                     "Verwenden wenn der Gast einen Reservierungscode genannt hat.",
-                parameters: z.object({
+                parameters: zodSchema(z.object({
                     code: z.string().describe("Buchungscode / Reservierungsnummer aus der E-Mail"),
-                }),
+                })),
                 execute: async ({ code }) => {
                     if (!hotelApiKey) return { fehler: "Kein PMS-Schlüssel für dieses Hotel" };
                     try {
@@ -109,9 +109,9 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Sucht einen Gast und seine aktuellen/zukünftigen Buchungen im PMS anhand der E-Mail-Adresse. " +
                     "Verwenden wenn KEIN Reservierungscode vorhanden ist.",
-                parameters: z.object({
+                parameters: zodSchema(z.object({
                     email: z.string().describe("E-Mail-Adresse des Gastes (Absender)"),
-                }),
+                })),
                 execute: async ({ email }) => {
                     if (!hotelApiKey) return { fehler: "Kein PMS-Schlüssel für dieses Hotel" };
                     try {
@@ -129,10 +129,10 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Prüft die Zimmerverfügbarkeit für einen Zeitraum. " +
                     "PFLICHT bei Reservierungsanfragen, bevor eine Bestätigung zugesagt wird!",
-                parameters: z.object({
+                parameters: zodSchema(z.object({
                     anreise: z.string().describe("Anreisedatum YYYY-MM-DD"),
                     abreise: z.string().describe("Abreisedatum YYYY-MM-DD"),
-                }),
+                })),
                 execute: async ({ anreise, abreise }) => {
                     if (!hotelApiKey) return { fehler: "Kein PMS-Schlüssel für dieses Hotel" };
                     try {
@@ -148,7 +148,7 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Legt die finale Antwort und die geplante PMS-Aktion fest. " +
                     "MUSS immer als LETZTER Schritt aufgerufen werden.",
-                parameters: z.object({
+                parameters: zodSchema(z.object({
                     api_action: z.string().describe(
                         "Name der geplanten PMS-Aktion: 'none' | 'updateRoomStay' | " +
                         "'createExternalSale' | 'Manuelle Stornierung durch Empfang' | " +
@@ -164,7 +164,7 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                         "Vollständiger, versandfertiger Antwortentwurf auf Deutsch. " +
                         "Beginnt mit der Anrede, endet mit 'Herzliche Grüße, Ihre Petulia & das Petul-Team'."
                     ),
-                }),
+                })),
                 execute: async (params) => params,
             }),
         },

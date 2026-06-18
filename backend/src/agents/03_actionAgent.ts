@@ -88,7 +88,7 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Lädt eine Reservierung anhand des Buchungscodes aus dem PMS. " +
                     "Verwenden wenn der Gast einen Reservierungscode genannt hat.",
-                parameters: zodSchema(z.object({
+                inputSchema: zodSchema(z.object({
                     code: z.string().describe("Buchungscode / Reservierungsnummer aus der E-Mail"),
                 })),
                 execute: async ({ code }) => {
@@ -109,7 +109,7 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Sucht einen Gast und seine aktuellen/zukünftigen Buchungen im PMS anhand der E-Mail-Adresse. " +
                     "Verwenden wenn KEIN Reservierungscode vorhanden ist.",
-                parameters: zodSchema(z.object({
+                inputSchema: zodSchema(z.object({
                     email: z.string().describe("E-Mail-Adresse des Gastes (Absender)"),
                 })),
                 execute: async ({ email }) => {
@@ -129,7 +129,7 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Prüft die Zimmerverfügbarkeit für einen Zeitraum. " +
                     "PFLICHT bei Reservierungsanfragen, bevor eine Bestätigung zugesagt wird!",
-                parameters: zodSchema(z.object({
+                inputSchema: zodSchema(z.object({
                     anreise: z.string().describe("Anreisedatum YYYY-MM-DD"),
                     abreise: z.string().describe("Abreisedatum YYYY-MM-DD"),
                 })),
@@ -148,7 +148,7 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
                 description:
                     "Legt die finale Antwort und die geplante PMS-Aktion fest. " +
                     "MUSS immer als LETZTER Schritt aufgerufen werden.",
-                parameters: zodSchema(z.object({
+                inputSchema: zodSchema(z.object({
                     api_action: z.string().describe(
                         "Name der geplanten PMS-Aktion: 'none' | 'updateRoomStay' | " +
                         "'createExternalSale' | 'Manuelle Stornierung durch Empfang' | " +

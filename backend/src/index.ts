@@ -320,14 +320,15 @@ async function processOutbound() {
     } catch (_) {}
 }
 
-// ─── Watcher: Manuell zurückgesetzte Mails (Status 'new') ────────────────────
+// ─── Watcher: Vom Dashboard angestoßene Analysen (Status 'queued') ───────────
+// Mails werden erst verarbeitet wenn die Rezeptionistin sie im Dashboard anklickt.
 
 async function watchNewMails() {
     try {
         const { data: newMails, error } = await supabase
             .from("emails")
             .select("*, senders!inner(email, name)")
-            .eq("status", "new")
+            .eq("status", "queued")
             .limit(5);
 
         if (error || !newMails || newMails.length === 0) return;
@@ -428,7 +429,7 @@ async function startListener() {
                 }
 
                 if (dbResult?.status === "success") {
-                    await runAiPipeline(mailData, dbResult.thread_id);
+                    console.log(`   ✅ Mail gespeichert — wartet auf Klick im Dashboard`);
                 }
 
                 await client.messageFlagsAdd(msg.seq, ["\\Seen"]);
@@ -452,9 +453,7 @@ process.on("uncaughtException", (err) => console.error("Uncaught:", err));
 process.on("unhandledRejection", (reason) => console.error("Unhandled:", reason));
 
 warmProductCache().then(() => {
-    recoverPendingMails().then(() => {
-        setInterval(processOutbound, 10000);
-        setInterval(watchNewMails, 5000);
-        startListener().catch(console.error);
-    });
+    setInterval(processOutbound, 10000);
+    setInterval(watchNewMails, 5000);
+    startListener().catch(console.error);
 });

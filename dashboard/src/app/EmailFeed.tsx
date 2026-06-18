@@ -35,7 +35,8 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 function StatusDot({ status }: { status?: string }) {
     const map: Record<string, { color: string; label: string; pulse?: boolean }> = {
-        new:        { color: "#6082B6", label: "Läuft",      pulse: true },
+        new:        { color: "#aaa",    label: "Neu" },
+        queued:     { color: "#6082B6", label: "Läuft",      pulse: true },
         processing: { color: "#F39200", label: "Wartet",     pulse: true },
         approved:   { color: "#009697", label: "Genehmigt",  pulse: true },
         sent:       { color: "#22c55e", label: "Gesendet" },
@@ -295,7 +296,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     const router = useRouter();
     const [emails, setEmails] = useState<Email[]>(initialEmails);
     const [selectedId, setSelectedId] = useState<string | null>(
-        initialEmails.find((e) => e.status === "processing")?.id || initialEmails[0]?.id || null
+        initialEmails.find((e) => e.status === "processing")?.id || null
     );
     const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting" | "regenerating">("idle");
     const [isMinimized, setIsMinimized] = useState(false);
@@ -322,7 +323,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     }, []);
 
     useEffect(() => {
-        const hasActive = emails.some((e) => e.status === "new" || e.status === "approved");
+        const hasActive = emails.some((e) => e.status === "queued" || e.status === "approved");
         const interval = setInterval(fetchEmails, hasActive ? 5000 : 30000);
         return () => clearInterval(interval);
     }, [emails, fetchEmails]);
@@ -381,10 +382,18 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
 
     // ─── Handlers ────────────────────────────────────────────────────────────
 
+    const handleSelectMail = async (email: Email) => {
+        setSelectedId(email.id);
+        if (email.status === "new") {
+            await supabase.from("emails").update({ status: "queued" }).eq("id", email.id);
+            await fetchEmails();
+        }
+    };
+
     const handleUpdateHotel = async (hotel: string) => {
         if (!currentMail) return;
         await supabase.from("emails").update({
-            status: "new",
+            status: "queued",
             intent: null,
             agent_logs: { ...currentMail.agent_logs, target_hotel: hotel, ai_force_hotel: hotel },
         }).eq("id", currentMail.id);
@@ -403,7 +412,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         setActionStatus("regenerating");
         setStep(0);
         await supabase.from("emails").update({
-            status: "new",
+            status: "queued",
             intent: null,
             api_action: null,
             draft_reply: null,
@@ -436,6 +445,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
 
     const pmsData = extractPmsDisplayData(currentMail?.agent_logs?.threeRpmsData ?? null);
     const isTerminal = ["sent", "rejected", "ignored", "failed", "approved"].includes(currentMail?.status ?? "");
+    const isQueued = currentMail?.status === "queued";
     const isNew = currentMail?.status === "new";
 
     // ─── Render ───────────────────────────────────────────────────────────────
@@ -480,7 +490,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                 {emails.slice(0, 30).map((email) => (
                                     <button
                                         key={email.id}
-                                        onClick={() => setSelectedId(email.id)}
+                                        onClick={() => handleSelectMail(email)}
                                         className={`w-full text-left px-3 py-2.5 mb-0.5 transition-all duration-150 border-l-2 ${
                                             selectedId === email.id
                                                 ? "bg-white/10 border-[#6082B6] text-white"
@@ -512,10 +522,10 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                 hotelName={currentMail.agent_logs?.target_hotel || ""}
                                                 onUpdateHotel={handleUpdateHotel}
                                             />
-                                            {!isTerminal && !isNew && (
+                                            {!isTerminal && !isQueued && !isNew && (
                                                 <AgentProgressSlim step={step} currentMail={currentMail} />
                                             )}
-                                            {isNew && (
+                                            {isQueued && (
                                                 <div className="flex items-center gap-2 text-[#6082B6]">
                                                     <Loader2 className="w-4 h-4 animate-spin" />
                                                     <span className="text-[9px] font-black uppercase tracking-widest">Pipeline läuft...</span>
@@ -631,6 +641,15 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             {isTerminal ? (
                                                 <StatusOverlay status={currentMail.status!} onRegenerate={handleRegenerate} />
                                             ) : isNew ? (
+                                                /* Noch nicht analysiert — Klick hat getriggert */
+                                                <div className="flex-1 flex flex-col items-center justify-center gap-4 text-black/20">
+                                                    <Database className="w-10 h-10 opacity-30" />
+                                                    <div className="text-center">
+                                                        <div className="text-[10px] font-black uppercase tracking-[0.3em]">Analyse startet...</div>
+                                                        <div className="text-[9px] text-black/20 mt-1">Einen Moment bitte</div>
+                                                    </div>
+                                                </div>
+                                            ) : isQueued ? (
                                                 /* Pipeline läuft */
                                                 <div className="flex-1 flex flex-col items-center justify-center gap-4 text-[#6082B6]">
                                                     <Loader2 className="w-10 h-10 animate-spin opacity-30" />
@@ -720,11 +739,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                                 Richtlinien-Hinweis
                                                             </span>
                                                         </div>
-                                                        <div className="text-[10px] text-black/60 leading-snug mb-2">
+                                                        <div className="text-[10px] text-black/60 leading-snug">
                                                             {currentMail.policy_decision_reason}
-                                                        </div>
-                                                        <div className="text-[8px] text-[#F39200] font-bold uppercase tracking-wide">
-                                                            ↳ Entwurf erklärt dies dem Gast
                                                         </div>
                                                     </div>
                                                 )}
@@ -780,7 +796,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     <div className="p-5 border border-dashed border-black/10 flex flex-col items-center gap-2 text-center">
                                                         <Database className="w-5 h-5 text-black/8" />
                                                         <div className="text-[9px] font-bold text-black/20 uppercase tracking-widest leading-snug">
-                                                            {isNew
+                                                            {isQueued
                                                                 ? "Wird gesucht..."
                                                                 : currentMail.agent_logs?.target_hotel && currentMail.agent_logs.target_hotel !== "UNKLAR"
                                                                     ? "Keine PMS-Daten"

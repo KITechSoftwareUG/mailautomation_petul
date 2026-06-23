@@ -253,6 +253,7 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 actionData: finalActionData,
                 threeRpmsData: finalActionData.threeRpmsData,
                 inventoryData: finalActionData.inventoryData,
+                pipeline_errors: finalActionData.pipeline_errors?.length ? finalActionData.pipeline_errors : undefined,
                 target_hotel: resolvedHotel,
                 hotel_source: hotelSource,
                 forward_target: mailData.forward_target || null,

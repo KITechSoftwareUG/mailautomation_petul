@@ -22,6 +22,7 @@ export interface ActionResult {
     threeRpmsData: any | null;
     inventoryData: any | null;
     tool_calls_made: string[];
+    pipeline_errors: string[];
 }
 
 export async function determineAction(
@@ -195,6 +196,10 @@ DEINE AUFGABE:
         .filter((r: any) => r.toolName !== "antwort_erstellen")
         .map((r: any) => r.toolName);
 
+    const pipelineErrors = toolResults
+        .filter((r: any) => r.output?.fehler)
+        .map((r: any) => `${r.toolName}: ${r.output.fehler}`);
+
     // Fallback wenn KI "antwort_erstellen" nicht aufgerufen hat
     const draft = draftResult ?? {
         api_action: "none",
@@ -214,5 +219,6 @@ DEINE AUFGABE:
         threeRpmsData: pmsResult,
         inventoryData: inventoryResult,
         tool_calls_made: calledTools,
+        pipeline_errors: pipelineErrors,
     };
 }

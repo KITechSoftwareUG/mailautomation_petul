@@ -755,6 +755,25 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     </div>
                                                 )}
 
+                                                {/* Pipeline-Fehler */}
+                                                {currentMail.agent_logs?.pipeline_errors?.length > 0 && (
+                                                    <div className="bg-[#E2001A]/6 border border-[#E2001A]/20 p-3">
+                                                        <div className="flex items-center gap-1.5 mb-2">
+                                                            <XCircle className="w-3 h-3 text-[#E2001A]" />
+                                                            <span className="text-[8px] font-black text-[#E2001A] uppercase tracking-widest">
+                                                                System-Fehler
+                                                            </span>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            {currentMail.agent_logs.pipeline_errors.map((err: string, i: number) => (
+                                                                <div key={i} className="text-[9px] text-black/50 leading-snug font-mono break-all">
+                                                                    {err}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+
                                                 {/* PMS-Reservierungsdaten */}
                                                 {pmsData ? (
                                                     <motion.div

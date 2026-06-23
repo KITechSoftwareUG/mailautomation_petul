@@ -450,7 +450,7 @@ async function startListener() {
                     mail_id,
                     betreff: p.subject || "",
                     body_text: p.text || "",
-                    body_html: p.textAsHtml ?? (p.html || ""),
+                    body_html: p.html || p.textAsHtml || "",
                     absender,
                     empfaenger: to_list.join(", "),
                     forward_target: forwardTarget,

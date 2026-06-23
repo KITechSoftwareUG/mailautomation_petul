@@ -578,11 +578,21 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                 <div className="text-[12px] leading-relaxed text-black/65">
                                                     {currentMail.body_html ? (
                                                         <div
-                                                            className="prose prose-xs max-w-none break-words overflow-hidden"
+                                                            className="prose prose-xs max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full"
                                                             dangerouslySetInnerHTML={{ __html: currentMail.body_html }}
                                                         />
                                                     ) : (
-                                                        <div className="whitespace-pre-wrap">{currentMail.body_text}</div>
+                                                        <div className="whitespace-pre-wrap">
+                                                            {(currentMail.body_text || "")
+                                                                .replace(/&zwnj;/g, "")
+                                                                .replace(/&nbsp;/g, " ")
+                                                                .replace(/&amp;/g, "&")
+                                                                .replace(/&lt;/g, "<")
+                                                                .replace(/&gt;/g, ">")
+                                                                .replace(/&#\d+;/g, "")
+                                                                .replace(/‌/g, "")
+                                                                .trim()}
+                                                        </div>
                                                     )}
                                                 </div>
 

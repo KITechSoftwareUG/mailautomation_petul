@@ -1,4 +1,4 @@
-import { generateText, tool, zodSchema } from "ai";
+import { generateText, tool, zodSchema, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import * as dotenv from "dotenv";
@@ -31,6 +31,8 @@ export async function determineAction(
     hotelApiKey: string = "",
     productCatalog: any = null,
     execution_error: string | null = null,
+    prefetchedPmsData: any = null,
+    prefetchedInventory: any = null,
 ): Promise<ActionResult> {
 
     const productSection = productCatalog
@@ -39,25 +41,25 @@ export async function determineAction(
 
     const hasPmsAccess = !!hotelApiKey;
 
+    const prefetchSection = (prefetchedPmsData || prefetchedInventory)
+        ? `\n## BEREITS GELADENE PMS-DATEN (kein Lookup-Tool mehr nötig — direkt antwort_erstellen aufrufen!)\n` +
+          (prefetchedPmsData ? `\nRESERVIERUNG / GAST:\n${JSON.stringify(prefetchedPmsData, null, 2)}\n` : "") +
+          (prefetchedInventory ? `\nVERFÜGBARKEIT:\n${JSON.stringify(prefetchedInventory, null, 2)}\n` : "")
+        : "";
+
     // ─── Agentic Loop ────────────────────────────────────────────────────────────
     // Die KI entscheidet selbst, welche Tools sie wann aufruft.
     // Erst nach der Datensammlung ruft sie "antwort_erstellen" auf.
 
     const result = await generateText({
         model: openai("gpt-4o"),
-        maxSteps: 6,
+        stopWhen: stepCountIs(6),
 
         system: `${getActionPrompt()}
 
 ${productSection}
-
-${execution_error ? `⚠️ VORHERIGER FEHLER BEIM API-AUFRUF: "${execution_error}" — Korrigiere deine Anfrage.\n` : ""}
-
-WICHTIG — REIHENFOLGE:
-1. Rufe zuerst die passenden Lookup-Tools auf (reservierung_suchen, gast_suchen, verfuegbarkeit_pruefen)
-2. Werte die Ergebnisse aus
-3. Rufe am Ende "antwort_erstellen" auf — dieser Schritt ist PFLICHT
-Du darfst mehrere Tools hintereinander aufrufen. maxSteps=6 erlaubt dir Spielraum.`,
+${prefetchSection}
+${execution_error ? `⚠️ VORHERIGER FEHLER BEIM API-AUFRUF: "${execution_error}" — Korrigiere deine Anfrage.\n` : ""}`,
 
         prompt: `Bearbeite diese E-Mail aus dem Petul-Postfach:
 
@@ -80,7 +82,11 @@ RICHTLINIEN-ENTSCHEIDUNG:
 - Anfrage erlaubt: ${policyData.policy_passed ? "Ja" : "Nein"}
 - Grund: ${policyData.policy_decision_reason}
 
-Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "antwort_erstellen".`,
+DEINE AUFGABE:
+1. Rufe JETZT die passenden Lookup-Tools auf — hole alle relevanten Daten aus dem PMS
+2. Schreibe danach via "antwort_erstellen" einen vollständigen, versandfertigen Antwortentwurf
+3. Der Entwurf muss die echten Daten aus dem PMS enthalten (Name, Buchungscode, Daten, Preise)
+4. KEIN "Wir werden uns melden" — beantworte die Anfrage des Gastes konkret und vollständig`,
 
         tools: {
             // ── Tool 1: Reservierung per Code ─────────────────────────────────────
@@ -175,15 +181,15 @@ Beginne jetzt mit der PMS-Datenabfrage. Dann erstelle den Antwortentwurf via "an
     const toolResults = result.steps.flatMap((s) => (s as any).toolResults ?? []);
 
     const draftResult = toolResults.find((r: any) => r.toolName === "antwort_erstellen")
-        ?.result as ActionResult | undefined;
+        ?.output as ActionResult | undefined;
 
     const pmsResult =
-        toolResults.find((r: any) => r.toolName === "reservierung_suchen")?.result ||
-        toolResults.find((r: any) => r.toolName === "gast_suchen")?.result ||
+        toolResults.find((r: any) => r.toolName === "reservierung_suchen")?.output ||
+        toolResults.find((r: any) => r.toolName === "gast_suchen")?.output ||
         null;
 
     const inventoryResult =
-        toolResults.find((r: any) => r.toolName === "verfuegbarkeit_pruefen")?.result || null;
+        toolResults.find((r: any) => r.toolName === "verfuegbarkeit_pruefen")?.output || null;
 
     const calledTools = toolResults
         .filter((r: any) => r.toolName !== "antwort_erstellen")

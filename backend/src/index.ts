@@ -22,6 +22,9 @@ import {
     HOTELS,
     identifyHotel,
     query3RPMS,
+    getReservationByCode,
+    searchReservationsByEmail,
+    getInventory,
     getHotelSettings,
 } from "./utils/threerpms";
 import { getSignature } from "./utils/signatures";
@@ -161,9 +164,52 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             : "unbekannt";
         console.log(`   → Hotel: ${resolvedHotel} (Quelle: ${hotelSource})`);
 
-        // 4. Agent 2: Policy Check (kein PMS-Pre-Fetch — Action Agent lädt Daten selbst via Tools)
-        console.log("   - [Step 2] Policy Agent prüft Richtlinien...");
-        const policyData = await checkPolicy(intentData, mailData.body_text);
+        // 4. Policy + 3RPMS-Lookup parallel — spart ~3-5s
+        console.log("   - [Step 2] Policy + PMS-Lookup parallel...");
+        const resNum = intentData.extracted_entities?.reservierungsnummer;
+        const ankunft = intentData.extracted_entities?.ankunft;
+        const abreise = intentData.extracted_entities?.abreise;
+
+        const [policyData, prefetchedPmsData, prefetchedInventory] = await Promise.all([
+            checkPolicy(intentData, mailData.body_text),
+
+            // 3RPMS: per Code oder per E-Mail
+            (async () => {
+                if (!hotelApiKey) return null;
+                if (resNum) {
+                    try {
+                        const res = await getReservationByCode(hotelApiKey, resNum);
+                        const node = res?.reservations?.edges?.[0]?.node;
+                        if (node) { console.log(`   ✅ Reservierung per Code gefunden: ${node.code}`); return node; }
+                    } catch (err: any) {
+                        console.warn(`   ⚠️  [3RPMS] Code-Suche: ${err.message}`);
+                    }
+                }
+                if (mailData.absender) {
+                    try {
+                        const result = await searchReservationsByEmail(hotelApiKey, mailData.absender);
+                        if (result) { console.log(`   ✅ Gast per E-Mail gefunden`); return result; }
+                    } catch (err: any) {
+                        console.warn(`   ⚠️  [3RPMS] E-Mail-Suche: ${err.message}`);
+                    }
+                }
+                return null;
+            })(),
+
+            // 3RPMS: Verfügbarkeit (nur bei Reservierungsanfrage mit Daten)
+            (async () => {
+                if (!hotelApiKey || intentData.kategorie !== "Reservierungsanfrage") return null;
+                if (!ankunft || !abreise) return null;
+                try {
+                    const inv = await getInventory(hotelApiKey, ankunft, abreise);
+                    console.log(`   ✅ Verfügbarkeit geladen`);
+                    return inv;
+                } catch (err: any) {
+                    console.warn(`   ⚠️  [3RPMS] Verfügbarkeit: ${err.message}`);
+                    return null;
+                }
+            })(),
+        ]);
 
         if (policyData.is_spam) {
             await supabase.from("emails").update({
@@ -175,8 +221,8 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             return;
         }
 
-        // 5. Agent 3: Action Agent mit Tool-Calling — lädt PMS-Daten selbst
-        console.log("   - [Step 3] Action Agent (mit Tools) sammelt PMS-Daten und formuliert Antwort...");
+        // 5. Action Agent — PMS-Daten bereits vorhanden, kein extra Lookup-Step nötig
+        console.log("   - [Step 3] Action Agent formuliert Antwort...");
         const productCatalog = hotel ? (hotelProductsCache[hotel?.id ?? ""] ?? null) : null;
         const finalActionData = await determineAction(
             intentData,
@@ -184,6 +230,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             mailData,
             hotelApiKey,
             productCatalog,
+            null,
+            prefetchedPmsData,
+            prefetchedInventory,
         );
         console.log(`   → Geplante Aktion: ${finalActionData.api_action}`);
         if (finalActionData.tool_calls_made?.length > 0) {

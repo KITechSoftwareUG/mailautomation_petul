@@ -194,8 +194,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                     try {
                         const result = await searchReservationsByEmail(hotelApiKey, mailData.absender);
                         if (result) { console.log(`   ✅ Gast per E-Mail gefunden`); return { attempted: true, data: result }; }
-                        console.warn(`   ⚠️  [3RPMS] E-Mail-Suche: Kein Gast für "${mailData.absender}" gefunden`);
-                        return { attempted: true, data: null };
+                        // Kein Treffer per E-Mail = Neugast, kein Fehler
+                        console.log(`   ℹ️  [3RPMS] Kein Bestandsgast für "${mailData.absender}" — Neugast`);
+                        return { attempted: false, data: null };
                     } catch (err: any) {
                         console.warn(`   ⚠️  [3RPMS] E-Mail-Suche Fehler: ${err.message}`);
                         return { attempted: true, data: null, error: err.message };
@@ -204,9 +205,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 return { attempted: false, data: null };
             })(),
 
-            // 3RPMS: Verfügbarkeit (nur bei Reservierungsanfrage mit Daten)
+            // 3RPMS: Verfügbarkeit (bei Reservierungsanfrage oder Umbuchung mit Datum)
             (async () => {
-                if (!hotelApiKey || intentData.kategorie !== "Reservierungsanfrage") return null;
+                if (!hotelApiKey || !["Reservierungsanfrage", "Umbuchung"].includes(intentData.kategorie)) return null;
                 if (!ankunft || !abreise) return null;
                 try {
                     const inv = await getInventory(hotelApiKey, ankunft, abreise);

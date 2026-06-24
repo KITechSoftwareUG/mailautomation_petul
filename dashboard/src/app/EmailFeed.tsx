@@ -196,7 +196,7 @@ function extractPmsDisplayData(threeRpmsData: any) {
 
 // ─── Status-Overlay (für sent / rejected / failed) ────────────────────────────
 
-function StatusOverlay({ status, onRegenerate }: { status: string; onRegenerate?: () => void }) {
+function StatusOverlay({ status, onRegenerate, errors }: { status: string; onRegenerate?: () => void; errors?: string[] }) {
     if (status === "sent") {
         return (
             <div className="flex-1 flex flex-col items-center justify-center gap-5 text-[#009697]">
@@ -247,14 +247,21 @@ function StatusOverlay({ status, onRegenerate }: { status: string; onRegenerate?
     }
     if (status === "failed") {
         return (
-            <div className="flex-1 flex flex-col items-center justify-center gap-5 text-[#E2001A]">
-                <div className="w-16 h-16 border-2 border-[#E2001A] flex items-center justify-center">
+            <div className="flex-1 flex flex-col items-center justify-center gap-5 px-10">
+                <div className="w-16 h-16 border-2 border-[#E2001A] flex items-center justify-center text-[#E2001A]">
                     <AlertTriangle className="w-7 h-7" />
                 </div>
                 <div className="text-center">
-                    <div className="text-sm font-bold uppercase tracking-[0.2em]">Pipeline-Fehler</div>
-                    <div className="text-[10px] text-black/30 mt-1 uppercase tracking-widest">AI-Analyse konnte nicht abgeschlossen werden</div>
+                    <div className="text-sm font-bold uppercase tracking-[0.2em] text-[#E2001A]">Schnittstellenfehler</div>
+                    <div className="text-[10px] text-black/30 mt-1 uppercase tracking-widest">Kein Entwurf erstellt — bitte manuell bearbeiten</div>
                 </div>
+                {errors && errors.length > 0 && (
+                    <div className="w-full max-w-sm bg-[#F9F9F9] border border-[#E2001A]/20 p-3 space-y-1">
+                        {errors.map((err, i) => (
+                            <div key={i} className="text-[9px] font-mono text-black/40 break-all leading-snug">{err}</div>
+                        ))}
+                    </div>
+                )}
                 {onRegenerate && (
                     <button
                         onClick={onRegenerate}
@@ -649,7 +656,11 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
 
                                             {/* Terminal states (sent, rejected, failed, ignored, approved) */}
                                             {isTerminal ? (
-                                                <StatusOverlay status={currentMail.status!} onRegenerate={handleRegenerate} />
+                                                <StatusOverlay
+                                                    status={currentMail.status!}
+                                                    onRegenerate={handleRegenerate}
+                                                    errors={currentMail.agent_logs?.pipeline_errors}
+                                                />
                                             ) : isNew ? (
                                                 /* Noch nicht analysiert — Klick hat getriggert */
                                                 <div className="flex-1 flex flex-col items-center justify-center gap-4 text-black/20">

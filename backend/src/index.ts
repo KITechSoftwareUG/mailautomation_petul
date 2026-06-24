@@ -239,18 +239,23 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             console.log(`   → Tools aufgerufen: ${finalActionData.tool_calls_made.join(", ")}`);
         }
 
-        // 6. DB Update – Status "processing", Mensch muss im Dashboard genehmigen
+        const hasApiErrors = finalActionData.pipeline_errors?.length > 0;
+        if (hasApiErrors) {
+            console.warn(`   ⚠️  Schnittstellenfehler — kein Entwurf: ${finalActionData.pipeline_errors.join("; ")}`);
+        }
+
+        // 6. DB Update — bei API-Fehlern: kein Entwurf, Status "failed"
         const { error: updateError } = await supabase.from("emails").update({
-            status: "processing",
+            status: hasApiErrors ? "failed" : "processing",
             intent: intentData.kategorie,
             policy_decision_allowed: policyData.policy_passed,
             policy_decision_reason: policyData.policy_decision_reason,
-            api_action: finalActionData.api_action,
-            draft_reply: finalActionData.antwort_entwurf,
+            api_action: hasApiErrors ? null : finalActionData.api_action,
+            draft_reply: hasApiErrors ? null : finalActionData.antwort_entwurf,
             agent_logs: {
                 intentData,
                 policyData,
-                actionData: finalActionData,
+                actionData: hasApiErrors ? null : finalActionData,
                 threeRpmsData: finalActionData.threeRpmsData,
                 inventoryData: finalActionData.inventoryData,
                 pipeline_errors: finalActionData.pipeline_errors?.length ? finalActionData.pipeline_errors : undefined,

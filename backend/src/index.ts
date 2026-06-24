@@ -170,30 +170,38 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         const ankunft = intentData.extracted_entities?.ankunft;
         const abreise = intentData.extracted_entities?.abreise;
 
-        const [policyData, prefetchedPmsData, prefetchedInventory] = await Promise.all([
+        const [policyData, pmsLookupResult, prefetchedInventory] = await Promise.all([
             checkPolicy(intentData, mailData.body_text),
 
             // 3RPMS: per Code oder per E-Mail
-            (async () => {
-                if (!hotelApiKey) return null;
+            // Gibt { attempted, data, error? } zurück — damit wir unterscheiden können:
+            // kein API-Key (attempted=false) vs. Suche lief aber nichts gefunden (attempted=true, data=null)
+            (async (): Promise<{ attempted: boolean; data: any | null; error?: string }> => {
+                if (!hotelApiKey) return { attempted: false, data: null };
                 if (resNum) {
                     try {
                         const res = await getReservationByCode(hotelApiKey, resNum);
                         const node = res?.reservations?.edges?.[0]?.node;
-                        if (node) { console.log(`   ✅ Reservierung per Code gefunden: ${node.code}`); return node; }
+                        if (node) { console.log(`   ✅ Reservierung per Code gefunden: ${node.code}`); return { attempted: true, data: node }; }
+                        console.warn(`   ⚠️  [3RPMS] Code-Suche: Reservierung "${resNum}" nicht gefunden`);
+                        return { attempted: true, data: null };
                     } catch (err: any) {
-                        console.warn(`   ⚠️  [3RPMS] Code-Suche: ${err.message}`);
+                        console.warn(`   ⚠️  [3RPMS] Code-Suche Fehler: ${err.message}`);
+                        return { attempted: true, data: null, error: err.message };
                     }
                 }
                 if (mailData.absender) {
                     try {
                         const result = await searchReservationsByEmail(hotelApiKey, mailData.absender);
-                        if (result) { console.log(`   ✅ Gast per E-Mail gefunden`); return result; }
+                        if (result) { console.log(`   ✅ Gast per E-Mail gefunden`); return { attempted: true, data: result }; }
+                        console.warn(`   ⚠️  [3RPMS] E-Mail-Suche: Kein Gast für "${mailData.absender}" gefunden`);
+                        return { attempted: true, data: null };
                     } catch (err: any) {
-                        console.warn(`   ⚠️  [3RPMS] E-Mail-Suche: ${err.message}`);
+                        console.warn(`   ⚠️  [3RPMS] E-Mail-Suche Fehler: ${err.message}`);
+                        return { attempted: true, data: null, error: err.message };
                     }
                 }
-                return null;
+                return { attempted: false, data: null };
             })(),
 
             // 3RPMS: Verfügbarkeit (nur bei Reservierungsanfrage mit Daten)
@@ -218,6 +226,36 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 policy_decision_reason: "SPAM erkannt",
             }).eq("mail_id", mailData.mail_id);
             console.log("🗑️  Echter SPAM erkannt – als ignored markiert.");
+            return;
+        }
+
+        // PMS-Daten auflösen — bei fehlgeschlagenem Lookup sofort stoppen
+        const prefetchedPmsData = pmsLookupResult.data;
+        if (pmsLookupResult.attempted && !pmsLookupResult.data) {
+            const errorMsg = pmsLookupResult.error
+                ? `3RPMS Schnittstellenfehler: ${pmsLookupResult.error}`
+                : resNum
+                    ? `Reservierung "${resNum}" nicht im 3RPMS gefunden — bitte manuell prüfen`
+                    : `Kein Gast für die Absender-E-Mail im 3RPMS gefunden — bitte manuell prüfen`;
+
+            console.warn(`   ⚠️  PMS-Daten fehlen — kein Entwurf erstellt: ${errorMsg}`);
+            await supabase.from("emails").update({
+                status: "failed",
+                intent: intentData.kategorie,
+                policy_decision_allowed: policyData.policy_passed,
+                policy_decision_reason: policyData.policy_decision_reason,
+                draft_reply: null,
+                api_action: null,
+                agent_logs: {
+                    intentData,
+                    policyData,
+                    pipeline_errors: [errorMsg],
+                    target_hotel: resolvedHotel,
+                    hotel_source: hotelSource,
+                    forward_target: mailData.forward_target || null,
+                    empfaenger: mailData.empfaenger || null,
+                } as any,
+            }).eq("mail_id", mailData.mail_id);
             return;
         }
 

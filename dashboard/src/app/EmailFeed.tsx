@@ -27,6 +27,20 @@ type Email = {
     senders?: { email: string; name?: string }[];
 };
 
+function getApiActionLabel(action: string | undefined): { title: string; beschreibung: string } | null {
+    if (!action || action === "none") return null;
+    const map: Record<string, { title: string; beschreibung: string }> = {
+        importReservation:                  { title: "Neue Buchung anlegen",        beschreibung: "Die Reservierung wird direkt im Hotelsystem eingetragen." },
+        updateRoomStay:                     { title: "Aufenthalt anpassen",         beschreibung: "Check-in- oder Check-out-Zeit wird im System geändert." },
+        createExternalSale:                 { title: "Zusatzleistung buchen",       beschreibung: "Wird direkt der Buchung angerechnet (z. B. Hund, Frühstück, Parkplatz)." },
+        updateReservation:                  { title: "Buchungsdaten aktualisieren", beschreibung: "Informationen zur Reservierung werden im System geändert." },
+        addRoomStayGuest:                   { title: "Gast hinzufügen",            beschreibung: "Eine weitere Person wird zur Buchung eingetragen." },
+        removeRoomStayGuest:                { title: "Gast entfernen",             beschreibung: "Eine Person wird aus der Buchung ausgetragen." },
+        "Manuelle Stornierung durch Empfang": { title: "Stornierung — manuell",    beschreibung: "Bitte diese Buchung direkt im Hotelsystem stornieren." },
+    };
+    return map[action] ?? { title: action, beschreibung: "Aktion wird nach Bestätigung ausgeführt." };
+}
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -846,8 +860,12 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                 )}
 
                                                 {/* Geplante Aktion */}
-                                                {currentMail.agent_logs?.actionData?.graphql_mutation &&
-                                                    currentMail.agent_logs.actionData.graphql_mutation !== "none" && (
+                                                {(() => {
+                                                    const actionLabel = getApiActionLabel(currentMail.api_action);
+                                                    const hasMutation = currentMail.agent_logs?.actionData?.graphql_mutation &&
+                                                        currentMail.agent_logs.actionData.graphql_mutation !== "none";
+                                                    if (!actionLabel || !hasMutation) return null;
+                                                    return (
                                                         <div className="bg-[#444444] p-3 text-white">
                                                             <div className="flex items-center gap-1.5 mb-2">
                                                                 <ChevronRight className="w-3 h-3 text-[#F39200]" />
@@ -855,7 +873,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                                     Geplante Aktion
                                                                 </span>
                                                             </div>
-                                                            <div className="text-[11px] font-bold leading-snug">{currentMail.api_action}</div>
+                                                            <div className="text-[11px] font-bold leading-snug">{actionLabel.title}</div>
+                                                            <div className="mt-1 text-[10px] opacity-60 leading-snug">{actionLabel.beschreibung}</div>
                                                             {currentMail.status === "processing" && (
                                                                 <div className="mt-2 text-[8px] font-mono opacity-35 uppercase tracking-wide">
                                                                     Erst nach Bestätigung
@@ -868,7 +887,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                                 </div>
                                                             )}
                                                         </div>
-                                                    )}
+                                                    );
+                                                })()}
 
 
                                                 {/* Reflexionen der KI (optional, ausblendbar) */}

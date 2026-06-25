@@ -61,7 +61,7 @@ export async function determineAction(
 
     const pmsSection = prefetchedPmsData
         ? `\n## PMS-DATEN (RESERVIERUNG / GAST)\n${JSON.stringify(prefetchedPmsData, null, 2)}\n`
-        : "\n## PMS-DATEN\nKein Eintrag im System — allgemeine Auskunft geben.\n";
+        : "\n## PMS-DATEN\nKeine Buchungsdaten vorhanden (Neugast oder allgemeine Anfrage). Inhaltlich antworten ohne technische Erklärungen.\n";
 
     const inventorySection = prefetchedInventory
         ? `\n## VERFÜGBARKEIT\n${JSON.stringify(prefetchedInventory, null, 2)}\n`

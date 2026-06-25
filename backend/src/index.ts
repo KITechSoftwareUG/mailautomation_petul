@@ -111,6 +111,8 @@ async function warmProductCache() {
 
 // ─── KI Pipeline ──────────────────────────────────────────────────────────────
 
+type PmsLookupResult = { attempted: boolean; data: any | null; error?: string };
+
 async function runAiPipeline(mailData: any, threadId: string | null) {
     if (pipelineInProgress.has(mailData.mail_id)) {
         console.log(`⏭️  Pipeline läuft bereits für ${mailData.mail_id} – überspringe`);
@@ -119,8 +121,27 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
     pipelineInProgress.add(mailData.mail_id);
     console.log(`🤖 KI Pipeline startet für mail_id: ${mailData.mail_id}`);
 
+    // Langen E-Mail-Text kürzen — reduziert Kontext für alle 3 LLM-Calls
+    const bodyText = (mailData.body_text || "").slice(0, 3000);
+
     try {
-        // 1. Thread History laden
+        // 0. Früher Start: 3RPMS E-Mail-Lookup SOFORT starten (parallel zu History + Intent)
+        //    Hotel aus Header deterministisch bestimmen — kein AI-Output nötig
+        const hotelEarly = identifyHotel(mailData.empfaenger, mailData.forward_target, null);
+        const earlyEmailLookup: Promise<PmsLookupResult> =
+            (hotelEarly?.key && mailData.absender)
+                ? searchReservationsByEmail(hotelEarly.key, mailData.absender)
+                    .then(r => r
+                        ? (console.log(`   ✅ [Early] Gast per E-Mail gefunden`), { attempted: true, data: r })
+                        : { attempted: false, data: null }
+                    )
+                    .catch((err: any) => (
+                        console.warn(`   ⚠️  [Early] E-Mail-Suche Fehler: ${err.message}`),
+                        { attempted: true, data: null, error: err.message }
+                    ))
+                : Promise.resolve({ attempted: false, data: null });
+
+        // 1. Thread History laden (parallel zum frühen Lookup)
         let historyText = "Keine Historie vorhanden.";
         if (threadId) {
             const { data: historyRows } = await supabase
@@ -132,14 +153,14 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
 
             if (historyRows && historyRows.length > 1) {
                 historyText = historyRows
-                    .map((r: any) => `[${new Date(r.received_at).toLocaleString()}] Von: ${r.senders.email}\n${r.body_text}`)
+                    .map((r: any) => `[${new Date(r.received_at).toLocaleString()}] Von: ${r.senders.email}\n${r.body_text?.slice(0, 500) || ""}`)
                     .join("\n\n---\n\n");
             }
         }
 
         // 2. Agent 1: Intent
         console.log("   - [Step 1] Intent Agent arbeitet...");
-        const intentData = await processIntent(mailData, historyText);
+        const intentData = await processIntent({ ...mailData, body_text: bodyText }, historyText);
         console.log(`   → Intent: ${intentData.kategorie}`);
 
         if (intentData.kategorie === "Spam/Irrelevant") {
@@ -171,12 +192,10 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         const abreise = intentData.extracted_entities?.abreise;
 
         const [policyData, pmsLookupResult, prefetchedInventory] = await Promise.all([
-            checkPolicy(intentData, mailData.body_text),
+            checkPolicy(intentData, bodyText),
 
-            // 3RPMS: per Code oder per E-Mail
-            // Gibt { attempted, data, error? } zurück — damit wir unterscheiden können:
-            // kein API-Key (attempted=false) vs. Suche lief aber nichts gefunden (attempted=true, data=null)
-            (async (): Promise<{ attempted: boolean; data: any | null; error?: string }> => {
+            // 3RPMS: per Code (mit Priorität) oder früh gestarteter E-Mail-Lookup (meist schon fertig)
+            (async (): Promise<PmsLookupResult> => {
                 if (!hotelApiKey) return { attempted: false, data: null };
                 if (resNum) {
                     try {
@@ -190,19 +209,8 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                         return { attempted: true, data: null, error: err.message };
                     }
                 }
-                if (mailData.absender) {
-                    try {
-                        const result = await searchReservationsByEmail(hotelApiKey, mailData.absender);
-                        if (result) { console.log(`   ✅ Gast per E-Mail gefunden`); return { attempted: true, data: result }; }
-                        // Kein Treffer per E-Mail = Neugast, kein Fehler
-                        console.log(`   ℹ️  [3RPMS] Kein Bestandsgast für "${mailData.absender}" — Neugast`);
-                        return { attempted: false, data: null };
-                    } catch (err: any) {
-                        console.warn(`   ⚠️  [3RPMS] E-Mail-Suche Fehler: ${err.message}`);
-                        return { attempted: true, data: null, error: err.message };
-                    }
-                }
-                return { attempted: false, data: null };
+                // Kein Code → früh gestarteten E-Mail-Lookup abwarten (meist schon fertig)
+                return await earlyEmailLookup;
             })(),
 
             // 3RPMS: Verfügbarkeit (bei Reservierungsanfrage oder Umbuchung mit Datum)
@@ -266,7 +274,7 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         const finalActionData = await determineAction(
             intentData,
             policyData,
-            mailData,
+            { ...mailData, body_text: bodyText },
             hotelApiKey,
             productCatalog,
             null,
@@ -548,6 +556,6 @@ process.on("unhandledRejection", (reason) => console.error("Unhandled:", reason)
 
 warmProductCache().then(() => {
     setInterval(processOutbound, 10000);
-    setInterval(watchNewMails, 5000);
+    setInterval(watchNewMails, 1500);  // Schnell pollen — kurze Wartezeit nach Dashboard-Klick
     startListener().catch(console.error);
 });

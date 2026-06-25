@@ -48,9 +48,16 @@ export async function determineAction(
     prefetchedInventory: any = null,
 ): Promise<ActionResult> {
 
-    const productSection = productCatalog
-        ? `\nVERFÜGBARE ZUSATZLEISTUNGEN (IDs für createExternalSale):\n${JSON.stringify(productCatalog, null, 2)}\n`
-        : "\nZUSATZLEISTUNGEN: Nicht geladen — bei Bedarf an Empfang weiterleiten.\n";
+    // Nur Zimmerkategorien weitergeben — Einzelzimmer (roomSetups) sind für E-Mails irrelevant
+    const categories = productCatalog?.settings?.categories?.edges?.map((e: any) => ({
+        id: e.node.id,
+        name: e.node.name,
+        beschreibung: e.node.description || "",
+    })) || null;
+
+    const productSection = categories?.length
+        ? `\nZIMMERKATEGORIEN (für Verfügbarkeitshinweise):\n${JSON.stringify(categories, null, 2)}\n`
+        : "\nZIMMERKATEGORIEN: Nicht geladen.\n";
 
     const pmsSection = prefetchedPmsData
         ? `\n## PMS-DATEN (RESERVIERUNG / GAST)\n${JSON.stringify(prefetchedPmsData, null, 2)}\n`

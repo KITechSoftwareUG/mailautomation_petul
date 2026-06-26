@@ -154,8 +154,7 @@ export async function getRoomStays(apiKey: string, filter: any = {}) {
  * Gibt vollständige Reservierungsdaten inkl. aller Zimmeraufenthalte und Gästedaten zurück.
  */
 export async function getReservationByCode(apiKey: string, code: string) {
-  // Nur bewährte Felder — camelCase-Felder (reservationFrom etc.) existieren nicht auf
-  // dem Reservation-Typ. Datum/Zimmer-Info kommen aus den roomStays (snake_case bestätigt).
+  // Nested field auf Reservation heißt "rooms" (nicht roomStays/room_stays).
   const query = `
     query GetReservation($code: String!) {
       reservations(filter: { code: { eq: $code } }, first: 1) {
@@ -178,7 +177,7 @@ export async function getReservationByCode(apiKey: string, code: string) {
                 telephone
               }
             }
-            roomStays {
+            rooms {
               edges {
                 node {
                   id

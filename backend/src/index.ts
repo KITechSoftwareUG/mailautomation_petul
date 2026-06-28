@@ -163,12 +163,13 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         const intentData = await processIntent({ ...mailData, body_text: bodyText }, historyText);
         console.log(`   → Intent: ${intentData.kategorie}`);
 
-        if (intentData.kategorie === "Spam/Irrelevant") {
+        const IGNORE_CATEGORIES = ["Spam/Irrelevant", "Portal-Benachrichtigung", "System-Benachrichtigung"];
+        if (IGNORE_CATEGORIES.includes(intentData.kategorie)) {
             await supabase.from("emails").update({
                 status: "ignored",
                 intent: intentData.kategorie,
             }).eq("mail_id", mailData.mail_id);
-            console.log("🗑️  Spam/Irrelevant – als ignored markiert.");
+            console.log(`🗑️  ${intentData.kategorie} – als ignored markiert.`);
             return;
         }
 

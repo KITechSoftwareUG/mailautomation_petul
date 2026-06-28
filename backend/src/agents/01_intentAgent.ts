@@ -19,6 +19,8 @@ export const INTENT_SCHEMA = z.object({
         "Allgemeine Frage",
         "Beschwerde",
         "Rechnungsfrage",
+        "Portal-Benachrichtigung",
+        "System-Benachrichtigung",
         "Spam/Irrelevant",
         "Sonstiges"
     ]),

@@ -120,7 +120,7 @@ export async function getRoomStays(apiKey: string, filter: any = {}) {
                   }
                   ... on Company {
                     id
-                    name
+                    company
                     email
                   }
                 }
@@ -217,47 +217,15 @@ export async function getReservationByCode(apiKey: string, code: string) {
 
 /**
  * Reservierungen anhand Gast-E-Mail-Adresse suchen.
- * Nützlich wenn kein Buchungs-Code in der Mail steht, aber die Absender-E-Mail bekannt ist.
+ * Strategie: room_stays ab heute laden, clientseitig nach first_guest.email filtern.
+ * Hinweis: ClientFilter unterstützt kein email-Feld (nur id/birthday/not/or).
  */
 export async function searchReservationsByEmail(apiKey: string, email: string) {
-  // Schritt 1: Client anhand E-Mail finden
-  // Company hat kein "name"-Feld — nur Person-Felder und "email" für Company
-  const clientQuery = `
-    query FindClientByEmail($filter: ClientFilter) {
-      clients(filter: $filter, first: 5) {
-        edges {
-          node {
-            id
-            ... on Person {
-              firstname
-              lastname
-              email
-            }
-            ... on Company {
-              email
-            }
-          }
-        }
-      }
-    }
-  `;
-  const clientResult = await query3RPMS<any>(apiKey, clientQuery, {
-    filter: { email: { eq: email } },
-  });
-
-  const clientEdges = clientResult?.clients?.edges || [];
-  if (clientEdges.length === 0) return null;
-
-  const clientId = clientEdges[0]?.node?.id;
-  if (!clientId) return null;
-
-  // Schritt 2: Aktuelle/zukünftige room_stays dieses Clients
-  // Nutze nur bestätigte snake_case Felder; kein client-Filter (nicht von API unterstützt)
-  // → filtern nach reservation_to >= heute, dann clientId clientseitig abgleichen
   const today = new Date().toISOString().split("T")[0];
+
   const staysQuery = `
-    query GetClientRoomStays($filter: RoomStayFilter) {
-      room_stays(filter: $filter, first: 10) {
+    query GetRoomStaysByDate($filter: RoomStayFilter) {
+      room_stays(filter: $filter, first: 50) {
         edges {
           node {
             id
@@ -275,43 +243,30 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
               firstname
               lastname
               email
+              telephone
+              mobile
             }
-            category {
-              id
-              name
-            }
-            reservation {
-              id
-              code
-              status
-              reservationFrom
-              reservationTo
-              totalAmount
-              openAmount
-              groupName
-            }
+            category { id name }
+            reservation { id code status }
           }
         }
       }
     }
   `;
 
-  let roomStays: any[] = [];
-  try {
-    const staysResult = await query3RPMS<any>(apiKey, staysQuery, {
-      filter: { reservation_to: { ge: today } },
-    });
-    // Nur Stays behalten, bei denen first_guest.email zur Suche passt
-    const allStays = staysResult?.room_stays?.edges?.map((e: any) => e.node) || [];
-    roomStays = allStays.filter((s: any) =>
-      s.first_guest?.email?.toLowerCase() === email.toLowerCase()
-    );
-  } catch {
-    // Fallback: gib nur Client zurück
-  }
+  const staysResult = await query3RPMS<any>(apiKey, staysQuery, {
+    filter: { reservation_to: { ge: today } },
+  });
+
+  const allStays = staysResult?.room_stays?.edges?.map((e: any) => e.node) || [];
+  const roomStays = allStays.filter((s: any) =>
+    s.first_guest?.email?.toLowerCase() === email.toLowerCase()
+  );
+
+  if (roomStays.length === 0) return null;
 
   return {
-    client: clientEdges[0]?.node,
+    client: roomStays[0]?.first_guest,
     reservations: [],
     roomStays,
   };
@@ -448,7 +403,7 @@ export async function searchClients(apiKey: string, filter: any = {}) {
               mealPreferences
             }
             ... on Company {
-              name
+              company
               email
               telephone
             }

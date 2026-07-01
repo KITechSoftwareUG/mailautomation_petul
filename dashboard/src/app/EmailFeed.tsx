@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
     ArrowRight, Minimize2, Layers, CheckCircle2, Terminal, BrainCircuit, PenTool,
     Database, MessageSquare, Copy, Check, ChevronRight, Sparkles, RefreshCw,
-    XCircle, Clock, Send, AlertTriangle, Loader2
+    XCircle, Clock, Send, AlertTriangle, Loader2, Maximize2, X, Settings
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -165,9 +165,8 @@ function extractPmsDisplayData(threeRpmsData: any) {
     if (!threeRpmsData) return null;
 
     // Format A: direkte Reservierung (via getReservationByCode)
-    // Struktur: { id, code, status, client, roomStays: { edges: [{ node }] } }
     if (threeRpmsData.code) {
-        const firstStay = threeRpmsData.roomStays?.edges?.[0]?.node;
+        const firstStay = threeRpmsData.rooms?.edges?.[0]?.node;
         return {
             guestName: guestDisplayName(threeRpmsData.client || threeRpmsData.first_guest),
             code:   threeRpmsData.code || "—",
@@ -210,7 +209,7 @@ function extractPmsDisplayData(threeRpmsData: any) {
 
 // ─── Status-Overlay (für sent / rejected / failed) ────────────────────────────
 
-function StatusOverlay({ status, onRegenerate, errors }: { status: string; onRegenerate?: () => void; errors?: string[] }) {
+function StatusOverlay({ status, intent, onRegenerate, errors }: { status: string; intent?: string; onRegenerate?: () => void; errors?: string[] }) {
     if (status === "sent") {
         return (
             <div className="flex-1 flex flex-col items-center justify-center gap-5 text-[#009697]">
@@ -289,12 +288,21 @@ function StatusOverlay({ status, onRegenerate, errors }: { status: string; onReg
         );
     }
     if (status === "ignored") {
+        const isPortal  = intent === "Portal-Benachrichtigung";
+        const isSystem  = intent === "System-Benachrichtigung";
+        const label     = isPortal ? "Portal-Benachrichtigung" : isSystem ? "System-Benachrichtigung" : "Spam / Irrelevant";
+        const sub       = isPortal ? "Automatische Buchungsportal-Nachricht — keine Antwort nötig"
+                        : isSystem ? "Automatische Systemnachricht — keine Antwort nötig"
+                        : "Als Spam oder irrelevant eingestuft";
+        const color     = isPortal || isSystem ? "#6082B6" : "#E2001A";
         return (
-            <div className="flex-1 flex flex-col items-center justify-center gap-4 text-[#E2001A]">
-                <div className="w-14 h-14 border-2 border-[#E2001A] flex items-center justify-center font-bold text-2xl">!</div>
+            <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ color }}>
+                <div className="w-14 h-14 border-2 flex items-center justify-center font-bold text-2xl" style={{ borderColor: color }}>
+                    {isPortal || isSystem ? "i" : "!"}
+                </div>
                 <div className="text-center">
-                    <div className="text-base font-bold uppercase tracking-widest">SPAM / IRRELEVANT</div>
-                    <div className="text-[10px] font-medium opacity-60 tracking-normal mt-1">Nachricht als nicht relevant eingestuft</div>
+                    <div className="text-base font-bold uppercase tracking-widest">{label}</div>
+                    <div className="text-[10px] font-medium opacity-60 tracking-normal mt-1">{sub}</div>
                 </div>
                 {onRegenerate && (
                     <button
@@ -311,6 +319,86 @@ function StatusOverlay({ status, onRegenerate, errors }: { status: string; onReg
     return null;
 }
 
+// ─── Mail-Vergrößerung (Vollbild-Ansicht) ─────────────────────────────────────
+
+function MailExpandModal({ email, onClose }: { email: Email; onClose: () => void }) {
+    return (
+        <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-8"
+            onClick={onClose}
+        >
+            <motion.div
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.97 }}
+                transition={{ duration: 0.15 }}
+                className="bg-white w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="shrink-0 px-6 py-4 border-b border-black/8 flex items-center justify-between gap-2 text-black/25">
+                    <div className="flex items-center gap-2">
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span className="text-[9px] font-black uppercase tracking-[0.35em]">Eingehende Mail</span>
+                    </div>
+                    <button onClick={onClose} title="Schließen" className="hover:text-black transition-colors">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
+                    <div className="mb-5 pb-5 border-b border-black/5">
+                        <div className="text-[8px] uppercase font-black tracking-widest text-black/20 mb-1.5">Betreff</div>
+                        <h2 className="text-[20px] font-bold tracking-tight leading-snug text-black">
+                            {email.betreff}
+                        </h2>
+                    </div>
+
+                    {email.senders?.[0] && (
+                        <div className="flex items-center gap-3 mb-6 p-4 bg-[#F9F9F9] border border-black/5">
+                            <div className="w-10 h-10 bg-[#6082B6] flex items-center justify-center shrink-0 text-white text-[14px] font-black">
+                                {(email.senders[0].name || email.senders[0].email).charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                                <div className="text-[14px] font-bold truncate leading-tight">
+                                    {email.senders[0].name || email.senders[0].email}
+                                </div>
+                                <div className="text-[11px] text-black/30 truncate">
+                                    {email.senders[0].email}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="text-[15px] leading-relaxed text-black/70">
+                        {email.body_html ? (
+                            <div
+                                className="prose max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full"
+                                dangerouslySetInnerHTML={{ __html: email.body_html }}
+                            />
+                        ) : (
+                            <div className="whitespace-pre-wrap">
+                                {(email.body_text || "")
+                                    .replace(/&zwnj;/g, "")
+                                    .replace(/&nbsp;/g, " ")
+                                    .replace(/&amp;/g, "&")
+                                    .replace(/&lt;/g, "<")
+                                    .replace(/&gt;/g, ">")
+                                    .replace(/&#\d+;/g, "")
+                                    .replace(/‌/g, "")
+                                    .trim()}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </motion.div>
+        </motion.div>
+    );
+}
+
 // ─── Haupt-Komponente ─────────────────────────────────────────────────────────
 
 export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
@@ -321,6 +409,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     );
     const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting" | "regenerating">("idle");
     const [isMinimized, setIsMinimized] = useState(false);
+    const [isMailExpanded, setIsMailExpanded] = useState(false);
     const [step, setStep] = useState(0);
     const [editedDraft, setEditedDraft] = useState<string>("");
     const [copied, setCopied] = useState(false);
@@ -376,6 +465,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     useEffect(() => {
         setEditedDraft(currentMail?.draft_reply || "");
         setCopied(false);
+        setIsMailExpanded(false);
     }, [selectedId, currentMail?.draft_reply]);
 
     // ─── Agent-Progress-Animation ────────────────────────────────────────────
@@ -486,9 +576,18 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                         {/* ── LINKE SIDEBAR ── */}
                         <div className="w-52 shrink-0 border-r border-black/10 flex flex-col bg-[#444444] text-white">
                             <div className="px-5 pt-5 pb-4">
-                                <div className="flex flex-col mb-3">
-                                    <h1 className="text-[16px] font-serif tracking-widest leading-none mb-0.5 uppercase">Apart Hotels</h1>
-                                    <span className="text-[14px] font-light italic lowercase opacity-70" style={{ fontFamily: "serif" }}>petul</span>
+                                <div className="flex items-start justify-between mb-3">
+                                    <div className="flex flex-col">
+                                        <h1 className="text-[16px] font-serif tracking-widest leading-none mb-0.5 uppercase">Apart Hotels</h1>
+                                        <span className="text-[14px] font-light italic lowercase opacity-70" style={{ fontFamily: "serif" }}>petul</span>
+                                    </div>
+                                    <button
+                                        onClick={() => router.push("/settings")}
+                                        title="Einstellungen"
+                                        className="text-white/30 hover:text-white transition-colors mt-1"
+                                    >
+                                        <Settings className="w-4 h-4" />
+                                    </button>
                                 </div>
                                 <div className="flex h-[3px] w-full mb-3 overflow-hidden">
                                     <div className="flex-1 bg-[#E2001A]" />
@@ -567,9 +666,18 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
 
                                         {/* ── SPALTE 1: E-MAIL PREVIEW ── */}
                                         <div className="col-span-3 border-r border-black/8 bg-white flex flex-col overflow-hidden">
-                                            <div className="shrink-0 px-5 py-3 border-b border-black/5 flex items-center gap-2 text-black/25">
-                                                <MessageSquare className="w-3.5 h-3.5" />
-                                                <span className="text-[9px] font-black uppercase tracking-[0.35em]">Eingehende Mail</span>
+                                            <div className="shrink-0 px-5 py-3 border-b border-black/5 flex items-center justify-between gap-2 text-black/25">
+                                                <div className="flex items-center gap-2">
+                                                    <MessageSquare className="w-3.5 h-3.5" />
+                                                    <span className="text-[9px] font-black uppercase tracking-[0.35em]">Eingehende Mail</span>
+                                                </div>
+                                                <button
+                                                    onClick={() => setIsMailExpanded(true)}
+                                                    title="Mail vergrößern"
+                                                    className="hover:text-black transition-colors"
+                                                >
+                                                    <Maximize2 className="w-3.5 h-3.5" />
+                                                </button>
                                             </div>
 
                                             <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
@@ -672,6 +780,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             {isTerminal ? (
                                                 <StatusOverlay
                                                     status={currentMail.status!}
+                                                    intent={currentMail.intent}
                                                     onRegenerate={handleRegenerate}
                                                     errors={currentMail.agent_logs?.pipeline_errors}
                                                 />
@@ -959,6 +1068,12 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                             )}
                         </div>
                     </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {isMailExpanded && currentMail && (
+                    <MailExpandModal email={currentMail} onClose={() => setIsMailExpanded(false)} />
                 )}
             </AnimatePresence>
         </div>

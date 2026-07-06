@@ -21,8 +21,8 @@ const ACTION_SCHEMA = z.object({
         "JSON-String mit den Variablen für die Mutation. null wenn keine Mutation."
     ),
     antwort_entwurf: z.string().describe(
-        "Vollständiger, versandfertiger Antwortentwurf auf Deutsch. " +
-        "Beginnt mit der Anrede, endet mit 'Herzliche Grüße, Ihre Petulia & das Petul-Team'."
+        "Vollständiger, versandfertiger Antwortentwurf. " +
+        "IMMER in der Sprache des Gastes (Englisch wenn Gast auf Englisch schreibt, etc.)."
     ),
 });
 
@@ -94,7 +94,8 @@ RICHTLINIEN-ENTSCHEIDUNG:
 - Anfrage erlaubt: ${policyData.policy_passed ? "Ja" : "Nein"}
 - Grund: ${policyData.policy_decision_reason}
 ${pmsSection}${inventorySection}
-AUFGABE: Schreibe den vollständigen, versandfertigen Antwortentwurf auf Deutsch.
+AUFGABE: Schreibe den vollständigen, versandfertigen Antwortentwurf.
+WICHTIG: Antworte IMMER in der Sprache des Gastes — Englisch wenn der Gast auf Englisch schreibt, Deutsch wenn auf Deutsch, etc.
 Verwende die echten Daten aus dem PMS. KEIN "Wir werden uns melden" — antworte konkret.`,
     });
 

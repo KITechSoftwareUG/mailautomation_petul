@@ -164,13 +164,16 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         console.log(`   → Intent: ${intentData.kategorie}`);
 
         const IGNORE_CATEGORIES = ["Spam/Irrelevant", "Portal-Benachrichtigung", "System-Benachrichtigung"];
-        if (IGNORE_CATEGORIES.includes(intentData.kategorie)) {
+        if (IGNORE_CATEGORIES.includes(intentData.kategorie) && !mailData.force_process) {
             await supabase.from("emails").update({
                 status: "ignored",
                 intent: intentData.kategorie,
             }).eq("mail_id", mailData.mail_id);
             console.log(`🗑️  ${intentData.kategorie} – als ignored markiert.`);
             return;
+        }
+        if (intentData.kategorie === "Spam/Irrelevant" && mailData.force_process) {
+            console.log("⚠️  Spam/Irrelevant-Klassifizierung — force_process aktiv, Bearbeitung fortgesetzt.");
         }
 
         // 3. Hotel identifizieren
@@ -229,7 +232,7 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             })(),
         ]);
 
-        if (policyData.is_spam) {
+        if (policyData.is_spam && !mailData.force_process) {
             await supabase.from("emails").update({
                 status: "ignored",
                 intent: intentData.kategorie,
@@ -237,6 +240,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             }).eq("mail_id", mailData.mail_id);
             console.log("🗑️  Echter SPAM erkannt – als ignored markiert.");
             return;
+        }
+        if (policyData.is_spam && mailData.force_process) {
+            console.log("⚠️  SPAM erkannt — force_process aktiv, Bearbeitung fortgesetzt.");
         }
 
         // PMS-Daten auflösen — bei fehlgeschlagenem Lookup sofort stoppen
@@ -404,7 +410,7 @@ async function processOutbound() {
                     (mail as any).forward_target || "",
                     (mail.agent_logs as any)?.target_hotel || null
                 )?.id ?? null;
-                const signature = getSignature(hotelId);
+                const signature = await getSignature(supabase, hotelId);
                 const bodyWithSignature = `${(mail as any).draft_reply}${signature}`;
 
                 await transporter.sendMail({
@@ -445,6 +451,7 @@ async function watchNewMails() {
                 absender: (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email || "system",
                 empfaenger: (mail.agent_logs as any)?.empfaenger || "",
                 forward_target: (mail.agent_logs as any)?.forward_target || "",
+                force_process: !!(mail.agent_logs as any)?.force_process,
             };
             await runAiPipeline(mailData, mail.thread_id);
         }

@@ -209,7 +209,7 @@ function extractPmsDisplayData(threeRpmsData: any) {
 
 // ─── Status-Overlay (für sent / rejected / failed) ────────────────────────────
 
-function StatusOverlay({ status, intent, onRegenerate, errors }: { status: string; intent?: string; onRegenerate?: () => void; errors?: string[] }) {
+function StatusOverlay({ status, intent, onRegenerate, onForceProcess, errors }: { status: string; intent?: string; onRegenerate?: () => void; onForceProcess?: () => void; errors?: string[] }) {
     if (status === "sent") {
         return (
             <div className="flex-1 flex flex-col items-center justify-center gap-5 text-[#009697]">
@@ -290,6 +290,7 @@ function StatusOverlay({ status, intent, onRegenerate, errors }: { status: strin
     if (status === "ignored") {
         const isPortal  = intent === "Portal-Benachrichtigung";
         const isSystem  = intent === "System-Benachrichtigung";
+        const isSpam    = !isPortal && !isSystem;
         const label     = isPortal ? "Portal-Benachrichtigung" : isSystem ? "System-Benachrichtigung" : "Spam / Irrelevant";
         const sub       = isPortal ? "Automatische Buchungsportal-Nachricht — keine Antwort nötig"
                         : isSystem ? "Automatische Systemnachricht — keine Antwort nötig"
@@ -304,15 +305,26 @@ function StatusOverlay({ status, intent, onRegenerate, errors }: { status: strin
                     <div className="text-base font-bold uppercase tracking-widest">{label}</div>
                     <div className="text-[10px] font-medium opacity-60 tracking-normal mt-1">{sub}</div>
                 </div>
-                {onRegenerate && (
-                    <button
-                        onClick={onRegenerate}
-                        className="flex items-center gap-2 px-4 py-2 border border-black/10 hover:bg-[#6082B6] hover:text-white text-black/30 text-[10px] font-bold uppercase tracking-widest transition-all"
-                    >
-                        <RefreshCw className="w-3.5 h-3.5" />
-                        Neu prüfen
-                    </button>
-                )}
+                <div className="flex flex-col items-center gap-2">
+                    {isSpam && onForceProcess && (
+                        <button
+                            onClick={onForceProcess}
+                            className="flex items-center gap-2 px-4 py-2 bg-[#6082B6] text-white hover:bg-[#444444] text-[10px] font-bold uppercase tracking-widest transition-all"
+                        >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Trotzdem bearbeiten
+                        </button>
+                    )}
+                    {onRegenerate && (
+                        <button
+                            onClick={onRegenerate}
+                            className="flex items-center gap-2 px-4 py-2 border border-black/10 hover:bg-[#6082B6] hover:text-white text-black/30 text-[10px] font-bold uppercase tracking-widest transition-all"
+                        >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            Neu prüfen
+                        </button>
+                    )}
+                </div>
             </div>
         );
     }
@@ -537,6 +549,28 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         setActionStatus("idle");
     };
 
+    const handleForceProcess = async () => {
+        if (!currentMail) return;
+        setActionStatus("regenerating");
+        setStep(0);
+        await supabase.from("emails").update({
+            status: "queued",
+            intent: null,
+            api_action: null,
+            draft_reply: null,
+            agent_logs: {
+                target_hotel: currentMail.agent_logs?.target_hotel || null,
+                ai_force_hotel: currentMail.agent_logs?.ai_force_hotel || null,
+                empfaenger: currentMail.agent_logs?.empfaenger || null,
+                forward_target: currentMail.agent_logs?.forward_target || null,
+                force_process: true,
+            },
+        }).eq("id", currentMail.id);
+        setEditedDraft("");
+        await fetchEmails();
+        setActionStatus("idle");
+    };
+
     const handleAction = async (action: "approve" | "reject") => {
         if (!currentMail) return;
         const currentId = currentMail.id;
@@ -636,8 +670,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                             {currentMail ? (
                                 <>
                                     {/* TOP-HEADER */}
-                                    <div className="shrink-0 flex items-center justify-between px-7 py-3 border-b border-black/8 bg-white">
-                                        <div className="flex items-center gap-4">
+                                    <div className="shrink-0 flex items-center justify-between px-7 py-3 border-b border-black/8 bg-white gap-4">
+                                        <div className="flex items-center gap-4 shrink-0">
                                             <HotelSelectorHeader
                                                 hotelName={currentMail.agent_logs?.target_hotel || ""}
                                                 onUpdateHotel={handleUpdateHotel}
@@ -653,93 +687,45 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             )}
                                         </div>
                                         <button
-                                            className="hover:rotate-90 transition-transform duration-500 text-black/25 hover:text-black"
-                                            title="Bildschirmschoner"
-                                            onClick={() => setIsMinimized(true)}
+                                            className="flex-1 min-w-0 flex flex-col items-center justify-center cursor-pointer hover:opacity-70 transition-opacity"
+                                            onClick={() => setIsMailExpanded(true)}
+                                            title="Mail ansehen"
                                         >
-                                            <Minimize2 className="w-5 h-5" />
+                                            <div className="text-[12px] font-bold truncate w-full text-center text-black/75 leading-snug">
+                                                {currentMail.betreff || "Kein Betreff"}
+                                            </div>
+                                            {currentMail.senders?.[0] && (
+                                                <div className="text-[9px] text-black/30 truncate">
+                                                    {currentMail.senders[0].name
+                                                        ? `${currentMail.senders[0].name} <${currentMail.senders[0].email}>`
+                                                        : currentMail.senders[0].email}
+                                                </div>
+                                            )}
                                         </button>
+                                        <div className="flex items-center gap-3 shrink-0">
+                                            <button
+                                                onClick={() => setIsMailExpanded(true)}
+                                                title="Originalmail ansehen"
+                                                className="flex items-center gap-1.5 px-2.5 py-1 border border-black/10 hover:bg-[#6082B6] hover:text-white hover:border-[#6082B6] text-black/30 text-[8px] font-black uppercase tracking-widest transition-all"
+                                            >
+                                                <Maximize2 className="w-3 h-3" />
+                                                Mail
+                                            </button>
+                                            <button
+                                                className="hover:rotate-90 transition-transform duration-500 text-black/25 hover:text-black"
+                                                title="Bildschirmschoner"
+                                                onClick={() => setIsMinimized(true)}
+                                            >
+                                                <Minimize2 className="w-5 h-5" />
+                                            </button>
+                                        </div>
                                     </div>
 
                                     {/* CONTENT: 3 Spalten */}
                                     <div className="flex-1 grid grid-cols-12 min-h-0 overflow-hidden">
 
-                                        {/* ── SPALTE 1: E-MAIL PREVIEW ── */}
-                                        <div className="col-span-3 border-r border-black/8 bg-white flex flex-col overflow-hidden">
-                                            <div className="shrink-0 px-5 py-3 border-b border-black/5 flex items-center justify-between gap-2 text-black/25">
-                                                <div className="flex items-center gap-2">
-                                                    <MessageSquare className="w-3.5 h-3.5" />
-                                                    <span className="text-[9px] font-black uppercase tracking-[0.35em]">Eingehende Mail</span>
-                                                </div>
-                                                <button
-                                                    onClick={() => setIsMailExpanded(true)}
-                                                    title="Mail vergrößern"
-                                                    className="hover:text-black transition-colors"
-                                                >
-                                                    <Maximize2 className="w-3.5 h-3.5" />
-                                                </button>
-                                            </div>
-
-                                            <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
-                                                <div className="mb-4 pb-4 border-b border-black/5">
-                                                    <div className="text-[8px] uppercase font-black tracking-widest text-black/20 mb-1.5">Betreff</div>
-                                                    <h2 className="text-[13px] font-bold tracking-tight leading-snug text-black">
-                                                        {currentMail.betreff}
-                                                    </h2>
-                                                </div>
-
-                                                {currentMail.senders?.[0] && (
-                                                    <div className="flex items-center gap-2.5 mb-5 p-3 bg-[#F9F9F9] border border-black/5">
-                                                        <div className="w-8 h-8 bg-[#6082B6] flex items-center justify-center shrink-0 text-white text-[11px] font-black">
-                                                            {(currentMail.senders[0].name || currentMail.senders[0].email).charAt(0).toUpperCase()}
-                                                        </div>
-                                                        <div className="min-w-0">
-                                                            <div className="text-[11px] font-bold truncate leading-tight">
-                                                                {currentMail.senders[0].name || currentMail.senders[0].email}
-                                                            </div>
-                                                            <div className="text-[9px] text-black/30 truncate">
-                                                                {currentMail.senders[0].email}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                <div className="text-[12px] leading-relaxed text-black/65">
-                                                    {currentMail.body_html ? (
-                                                        <div
-                                                            className="prose prose-xs max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full"
-                                                            dangerouslySetInnerHTML={{ __html: currentMail.body_html }}
-                                                        />
-                                                    ) : (
-                                                        <div className="whitespace-pre-wrap">
-                                                            {(currentMail.body_text || "")
-                                                                .replace(/&zwnj;/g, "")
-                                                                .replace(/&nbsp;/g, " ")
-                                                                .replace(/&amp;/g, "&")
-                                                                .replace(/&lt;/g, "<")
-                                                                .replace(/&gt;/g, ">")
-                                                                .replace(/&#\d+;/g, "")
-                                                                .replace(/‌/g, "")
-                                                                .trim()}
-                                                        </div>
-                                                    )}
-                                                </div>
-
-                                                {currentMail.agent_logs?.relevant_context && (
-                                                    <div className="mt-5 pt-4 border-t border-black/5">
-                                                        <span className="text-[9px] font-black uppercase tracking-widest text-[#6082B6] block mb-2">
-                                                            Historischer Kontext
-                                                        </span>
-                                                        <div className="text-[11px] text-black/50 italic leading-relaxed">
-                                                            {currentMail.agent_logs.relevant_context}
-                                                        </div>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-
-                                        {/* ── SPALTE 2: ANTWORT-ENTWURF ── */}
-                                        <div className="col-span-6 flex flex-col bg-white border-r border-black/8 overflow-hidden">
+                                        {/* ── SPALTE 1: ANTWORT-ENTWURF ── */}
+                                        <div className="col-span-8 flex flex-col bg-white border-r border-black/8 overflow-hidden">
                                             <div className="shrink-0 px-8 py-3 border-b border-black/5 flex items-center justify-between">
                                                 <div className="flex items-center gap-2.5">
                                                     <span className="text-[9px] font-black uppercase tracking-[0.35em] text-[#6082B6]">Antwort-Entwurf</span>
@@ -782,6 +768,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     status={currentMail.status!}
                                                     intent={currentMail.intent}
                                                     onRegenerate={handleRegenerate}
+                                                    onForceProcess={handleForceProcess}
                                                     errors={currentMail.agent_logs?.pipeline_errors}
                                                 />
                                             ) : isNew ? (
@@ -854,8 +841,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             )}
                                         </div>
 
-                                        {/* ── SPALTE 3: INSIGHTS ── */}
-                                        <div className="col-span-3 flex flex-col bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
+                                        {/* ── SPALTE 2: INSIGHTS ── */}
+                                        <div className="col-span-4 flex flex-col bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
                                             <div className="shrink-0 px-4 py-3 border-b border-black/5 flex items-center gap-2 text-black/25">
                                                 <Database className="w-3.5 h-3.5 text-[#6082B6]" />
                                                 <span className="text-[9px] font-black uppercase tracking-[0.35em]">Ergebnisse</span>
@@ -999,6 +986,18 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     );
                                                 })()}
 
+
+                                                {/* Historischer Kontext */}
+                                                {currentMail.agent_logs?.relevant_context && (
+                                                    <div className="bg-white border border-black/5 p-3">
+                                                        <div className="text-[8px] uppercase text-black/20 font-black tracking-widest mb-1.5">
+                                                            Historischer Kontext
+                                                        </div>
+                                                        <div className="text-[10px] text-black/50 italic leading-relaxed">
+                                                            {currentMail.agent_logs.relevant_context}
+                                                        </div>
+                                                    </div>
+                                                )}
 
                                                 {/* Reflexionen der KI (optional, ausblendbar) */}
                                                 {currentMail.agent_logs?.actionData?.reflexion_loop_gedanken?.length > 0 && (

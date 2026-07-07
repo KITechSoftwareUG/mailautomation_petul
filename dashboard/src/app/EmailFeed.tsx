@@ -209,7 +209,7 @@ function extractPmsDisplayData(threeRpmsData: any) {
 
 // ─── Status-Overlay (für sent / rejected / failed) ────────────────────────────
 
-function StatusOverlay({ status, intent, onRegenerate, onForceProcess, errors }: { status: string; intent?: string; onRegenerate?: () => void; onForceProcess?: () => void; errors?: string[] }) {
+function StatusOverlay({ status, intent, onRegenerate, errors }: { status: string; intent?: string; onRegenerate?: () => void; errors?: string[] }) {
     if (status === "sent") {
         return (
             <div className="flex-1 flex flex-col items-center justify-center gap-5 text-[#009697]">
@@ -284,47 +284,6 @@ function StatusOverlay({ status, intent, onRegenerate, onForceProcess, errors }:
                         Erneut versuchen
                     </button>
                 )}
-            </div>
-        );
-    }
-    if (status === "ignored") {
-        const isPortal  = intent === "Portal-Benachrichtigung";
-        const isSystem  = intent === "System-Benachrichtigung";
-        const isSpam    = !isPortal && !isSystem;
-        const label     = isPortal ? "Portal-Benachrichtigung" : isSystem ? "System-Benachrichtigung" : "Spam / Irrelevant";
-        const sub       = isPortal ? "Automatische Buchungsportal-Nachricht — keine Antwort nötig"
-                        : isSystem ? "Automatische Systemnachricht — keine Antwort nötig"
-                        : "Als Spam oder irrelevant eingestuft";
-        const color     = isPortal || isSystem ? "#6082B6" : "#E2001A";
-        return (
-            <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ color }}>
-                <div className="w-14 h-14 border-2 flex items-center justify-center font-bold text-2xl" style={{ borderColor: color }}>
-                    {isPortal || isSystem ? "i" : "!"}
-                </div>
-                <div className="text-center">
-                    <div className="text-base font-bold uppercase tracking-widest">{label}</div>
-                    <div className="text-[10px] font-medium opacity-60 tracking-normal mt-1">{sub}</div>
-                </div>
-                <div className="flex flex-col items-center gap-2">
-                    {isSpam && onForceProcess && (
-                        <button
-                            onClick={onForceProcess}
-                            className="flex items-center gap-2 px-4 py-2 bg-[#6082B6] text-white hover:bg-[#444444] text-[10px] font-bold uppercase tracking-widest transition-all"
-                        >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            Trotzdem bearbeiten
-                        </button>
-                    )}
-                    {onRegenerate && (
-                        <button
-                            onClick={onRegenerate}
-                            className="flex items-center gap-2 px-4 py-2 border border-black/10 hover:bg-[#6082B6] hover:text-white text-black/30 text-[10px] font-bold uppercase tracking-widest transition-all"
-                        >
-                            <RefreshCw className="w-3.5 h-3.5" />
-                            Neu prüfen
-                        </button>
-                    )}
-                </div>
             </div>
         );
     }
@@ -762,13 +721,78 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                 </div>
                                             </div>
 
-                                            {/* Terminal states (sent, rejected, failed, ignored, approved) */}
-                                            {isTerminal ? (
+                                            {/* Terminal states (sent, rejected, failed, approved) */}
+                                            {currentMail.status === "ignored" ? (() => {
+                                                const isPortal = currentMail.intent === "Portal-Benachrichtigung";
+                                                const isSystem = currentMail.intent === "System-Benachrichtigung";
+                                                const isSpam   = !isPortal && !isSystem;
+                                                const label    = isPortal ? "Portal-Benachrichtigung" : isSystem ? "System-Benachrichtigung" : "Spam / Irrelevant";
+                                                const sub      = isPortal ? "Automatische Buchungsportal-Nachricht — keine Antwort nötig"
+                                                               : isSystem ? "Automatische Systemnachricht — keine Antwort nötig"
+                                                               : "Als Spam oder irrelevant eingestuft";
+                                                const color    = isPortal || isSystem ? "#6082B6" : "#E2001A";
+                                                return (
+                                                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                                                        {/* Kompaktes Status-Banner */}
+                                                        <div className="shrink-0 flex items-center justify-between gap-4 px-8 py-3 border-b border-black/8" style={{ background: color + "12" }}>
+                                                            <div className="flex items-center gap-3 min-w-0">
+                                                                <div className="w-5 h-5 border-2 flex items-center justify-center font-bold text-[10px] shrink-0" style={{ borderColor: color, color }}>
+                                                                    {isPortal || isSystem ? "i" : "!"}
+                                                                </div>
+                                                                <div className="min-w-0">
+                                                                    <div className="text-[9px] font-black uppercase tracking-widest" style={{ color }}>{label}</div>
+                                                                    <div className="text-[8px] text-black/35 truncate">{sub}</div>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 shrink-0">
+                                                                {isSpam && (
+                                                                    <button
+                                                                        onClick={handleForceProcess}
+                                                                        disabled={actionStatus !== "idle"}
+                                                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#6082B6] text-white hover:bg-[#444444] text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-30"
+                                                                    >
+                                                                        <CheckCircle2 className="w-3 h-3" />
+                                                                        Trotzdem bearbeiten
+                                                                    </button>
+                                                                )}
+                                                                <button
+                                                                    onClick={handleRegenerate}
+                                                                    disabled={actionStatus !== "idle"}
+                                                                    className="flex items-center gap-1.5 px-3 py-1.5 border border-black/10 hover:bg-[#6082B6] hover:text-white text-black/30 text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-30"
+                                                                >
+                                                                    <RefreshCw className={`w-3 h-3 ${actionStatus === "regenerating" ? "animate-spin" : ""}`} />
+                                                                    Neu prüfen
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        {/* Mail-Body — nur lesbar */}
+                                                        <div className="flex-1 overflow-y-auto custom-scrollbar px-10 py-8 text-[15px] leading-relaxed text-black/55">
+                                                            {currentMail.body_html ? (
+                                                                <div
+                                                                    className="prose max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full"
+                                                                    dangerouslySetInnerHTML={{ __html: currentMail.body_html }}
+                                                                />
+                                                            ) : (
+                                                                <div className="whitespace-pre-wrap">
+                                                                    {(currentMail.body_text || "")
+                                                                        .replace(/&zwnj;/g, "")
+                                                                        .replace(/&nbsp;/g, " ")
+                                                                        .replace(/&amp;/g, "&")
+                                                                        .replace(/&lt;/g, "<")
+                                                                        .replace(/&gt;/g, ">")
+                                                                        .replace(/&#\d+;/g, "")
+                                                                        .replace(/‌/g, "")
+                                                                        .trim()}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })() : isTerminal ? (
                                                 <StatusOverlay
                                                     status={currentMail.status!}
                                                     intent={currentMail.intent}
                                                     onRegenerate={handleRegenerate}
-                                                    onForceProcess={handleForceProcess}
                                                     errors={currentMail.agent_logs?.pipeline_errors}
                                                 />
                                             ) : isNew ? (

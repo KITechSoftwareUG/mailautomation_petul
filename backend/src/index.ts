@@ -539,7 +539,33 @@ async function startListener() {
                 }
 
                 if (dbResult?.status === "success") {
-                    console.log(`   ✅ Mail gespeichert — wartet auf Klick im Dashboard`);
+                    // Thread-ID aus DB lesen (wird vom RPC gesetzt)
+                    const { data: storedMail } = await supabase
+                        .from("emails")
+                        .select("thread_id")
+                        .eq("mail_id", mailData.mail_id)
+                        .maybeSingle();
+
+                    // Sofort in Pipeline — kein Dashboard-Klick nötig
+                    await supabase.from("emails").update({
+                        status: "queued",
+                        agent_logs: {
+                            empfaenger: mailData.empfaenger,
+                            forward_target: mailData.forward_target,
+                        },
+                    }).eq("mail_id", mailData.mail_id);
+
+                    console.log(`   ✅ Mail gespeichert — Pipeline startet sofort`);
+
+                    runAiPipeline({
+                        mail_id: mailData.mail_id,
+                        betreff: mailData.betreff,
+                        body_text: mailData.body_text,
+                        absender: mailData.absender,
+                        empfaenger: mailData.empfaenger,
+                        forward_target: mailData.forward_target,
+                        force_process: false,
+                    }, storedMail?.thread_id || null).catch(console.error);
                 }
 
                 await client.messageFlagsAdd(msg.seq, ["\\Seen"]);

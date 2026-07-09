@@ -14,9 +14,12 @@ Eine Rezeptionistin prüft und genehmigt den Entwurf im Dashboard — dann wird 
 IMAP-Listener (imapflow)
        ↓ neue Mail
 Supabase (emails-Tabelle, status: "new")
-       ↓ Rezeptionistin klickt im Dashboard
+       ↓ SOFORT automatisch (kein Dashboard-Klick nötig, seit Commit 0d64d15)
 Status: "queued"
-       ↓ watchNewMails-Poller (alle 1,5s)
+       ↓ runAiPipeline() wird direkt aufgerufen; watchNewMails-Poller (1,5s) ist
+       ↓ das Sicherheitsnetz für alles, was zusätzlich auf "queued" gesetzt wird
+       ↓ (Dashboard-Klicks wie "Neu prüfen"/"Trotzdem bearbeiten"/Hotel ändern,
+       ↓ oder ein Prozess-Neustart mitten in einem Lauf)
 3-Agenten-KI-Pipeline (gpt-4o-mini, AI SDK generateObject):
   1. Intent Agent  → Klassifizierung der Mail
   2. Policy Agent  → Richtlinienprüfung (Türcodes, Stornierung, etc.)
@@ -28,6 +31,11 @@ Status: "approved"
        ↓ processOutbound-Poller (alle 10s)
 SMTP: Mail wird gesendet (status: "sent")
 ```
+
+Jede Mail, die > 30 Tage in `new`/`processing`/`failed` hängt (nie angeschaut, nie freigegeben,
+nie erneut versucht), wird automatisch auf `status: "archived"` gesetzt (`archiveStaleMails()`
+in `backend/src/index.ts`, läuft alle 6h) — nichts wird gelöscht, sie verschwindet nur aus der
+aktiven Dashboard-Ansicht. Verhindert, dass sich unbemerkt wieder ein Rückstau aufbaut.
 
 ---
 
@@ -76,16 +84,33 @@ Dashboard (Next.js): Kein eigener Restart nötig — Vercel deployt automatisch 
 
 ```
 new → queued → [KI-Pipeline] → processing → approved → sent
-                             ↘ ignored  (Spam / Portal-Benachrichtigung / System-Benachrichtigung)
-                             ↘ failed   (3RPMS-API-Fehler: Gast nicht gefunden etc.)
+                             ↘ ignored   (Spam / Portal-Benachrichtigung / System-Benachrichtigung)
+                             ↘ failed    (3RPMS-API-Fehler, unerwarteter Pipeline-Fehler etc.)
+new/processing/failed → archived (automatisch nach 30 Tagen ohne Aktion, s.o.)
 ```
 
-- `new`: Mail eingetroffen, wartet auf Dashboard-Aktion
-- `queued`: Dashboard-Klick → watchNewMails startet Pipeline (1,5s-Poller)
+- `new`: Mail eingetroffen — wird vom IMAP-Listener sofort automatisch auf `queued` gesetzt
+  (kein Dashboard-Klick mehr nötig). Bleibt nur "new" hängen, wenn dieser Schritt fehlschlägt.
+- `queued`: Pipeline läuft/wartet auf Verarbeitung (automatisch getriggert ODER durch einen
+  Dashboard-Klick erneut angestoßen — beides landet im selben `watchNewMails`-Poller, 1,5s)
 - `processing`: Pipeline fertig, `draft_reply` gesetzt, wartet auf Freigabe
 - `approved`: Rezeptionistin hat bestätigt → processOutbound sendet (10s-Poller)
 - `sent` / `failed` / `rejected`: Endstatus
 - `ignored`: KI hat Mail als Spam/Portal/System klassifiziert
+- `archived`: > 30 Tage in new/processing/failed ohne Aktion — automatisch aus der aktiven
+  Ansicht entfernt, Daten bleiben erhalten
+
+**Race-Condition-Schutz (`queued_at`):** Jede Neu-Anstoß-Aktion (Dashboard-Klick oder IMAP-Trigger)
+schreibt einen frischen Zeitstempel nach `agent_logs.queued_at`. Bevor `runAiPipeline()` sein
+Ergebnis in die DB schreibt, vergleicht es den zu Beginn gelesenen Wert mit dem aktuellen —
+weicht er ab, wurde die Mail zwischenzeitlich erneut angestoßen und das veraltete Ergebnis wird
+verworfen statt einen frischeren Klick stillschweigend zu überschreiben (`writeResultIfCurrent()`
+in `backend/src/index.ts`).
+
+**Dashboard-Sichtbarkeit:** Die Mail-Liste zeigt standardmäßig zwei Gruppen — aktiv
+(`new`/`queued`/`processing`/`failed`/`approved`, bis zu 300 Mails) und darunter "Erledigt"
+(`ignored`/`sent`/`rejected`, die letzten 50). `archived` taucht dort nie auf. Siehe
+`dashboard/src/app/emails/constants.ts` (`ACTIVE_STATUSES`/`DONE_STATUSES`).
 
 ---
 
@@ -99,7 +124,7 @@ Backend liest `force_process` aus `emails.agent_logs` und überspringt bei `true
 - `IGNORE_CATEGORIES`-Check (Intent Agent)
 - `is_spam`-Check (Policy Agent)
 
-Implementierung: `backend/src/index.ts`, Funktion `processEmail`.
+Implementierung: `backend/src/index.ts`, Funktion `runAiPipeline`.
 **Ohne PM2-Neustart nach Feature-Einführung greift force_process nicht!**
 
 ---
@@ -127,7 +152,12 @@ Implementierung: `backend/src/index.ts`, Funktion `processEmail`.
 | `hotel_signatures` | Konfigurierbare Signaturen pro Hotel — editierbar im Dashboard `/settings` |
 
 `emails.agent_logs` (JSONB) enthält: `intentData`, `policyData`, `actionData`, `threeRpmsData`,
-`target_hotel`, `empfaenger`, `forward_target`, `force_process`.
+`target_hotel`, `empfaenger`, `forward_target`, `force_process`, `queued_at` (Zeitstempel des
+letzten Neu-Anstoßes, für den Race-Condition-Schutz — s. Status-Fluss oben), `pipeline_errors`.
+
+**Wichtig:** `empfaenger`/`forward_target` sind NUR in `agent_logs` — keine eigenen Spalten der
+`emails`-Tabelle. Ein `.select()`/`.update()` mit diesen Namen als Top-Level-Spalten schlägt
+fehl (genau das war der Bug, der `processOutbound` monatelang lahmgelegt hat).
 
 `hotel_signatures` hat Zeilen für `H1`–`H5` + `DEFAULT`. Platzhalter-Adressen sind drin —
 echte Adressen bitte im Dashboard unter `/settings` eintragen.
@@ -161,14 +191,45 @@ Wenn Antworten auf Deutsch kommen trotz englischer Mail → beide Dateien prüfe
 
 ## Dashboard — Layout-Übersicht
 
-- **Linke Sidebar** (dunkel): Mail-Liste mit Status-Indikatoren
-- **Header**: Hotel-Selector, Betreff + Absender (klickbar → öffnet `MailExpandModal`)
-- **Hauptbereich** (2-Spalten-Grid):
-  - Links (`col-span-8`): Antwort-Entwurf (editierbar) + Aktions-Buttons
-  - Rechts (`col-span-4`): Erkannte Anfrage, PMS-Daten, geplante Aktion
+- **Linke Sidebar** (dunkel, `w-64`): Mail-Liste — Betreff, Absender, Uhrzeit, Status-Punkt.
+  Zwei Gruppen: aktiv oben, "Erledigt" (ignored/sent/rejected) darunter mit Trenner.
+- **Header**: Hotel-Selector, Betreff + Absender (klickbar → öffnet `MailExpandModal`, Vollbild)
+- **Hauptbereich** (3-Spalten-Grid, `grid-cols-12`):
+  - `col-span-3`: **Eingehende Mail** — permanente Vorschau (Betreff, Absender, Body), damit
+    man beim Bearbeiten des Entwurfs nicht ständig zwischen Original und Antwort hin- und
+    herschalten muss. Maximieren-Button öffnet dieselbe Mail im Vollbild-Modal.
+  - `col-span-6`: Antwort-Entwurf (editierbar) + Aktions-Buttons
+  - `col-span-3`: Erkannte Anfrage, PMS-Daten, geplante Aktion
+
+Mail-Body-Rendering (HTML/Text + Entity-Cleanup) ist in `MailBodyContent` zusammengefasst
+(`dashboard/src/app/EmailFeed.tsx`) — wird von Vorschau-Spalte, Vollbild-Modal und der
+`ignored`-Ansicht gemeinsam genutzt, nicht mehr dreifach dupliziert.
 
 Für `ignored`-Mails: kompaktes Banner oben (Farbe je nach Typ) + Mail-Body darunter (lesbar).
 Für `processing`-Mails: Entwurf-Textarea + "Bestätigen & Senden" / "Ablehnen" unten.
+
+---
+
+## Sicherheitsarchitektur (Dashboard ↔ Supabase)
+
+Das Dashboard hat **kein Supabase Auth** — Zugriffsschutz ist ausschließlich das
+Passwort-Cookie aus `proxy.ts` (`DASHBOARD_PASSWORD`/`SESSION_SECRET`). Alle Datenbankzugriffe
+laufen deshalb **ausschließlich serverseitig** über Next.js Server Actions:
+
+- `dashboard/src/utils/supabase/server.ts` — Service-Role-Client, liest `SUPABASE_URL` +
+  `SUPABASE_SERVICE_ROLE_KEY` (server-only, **kein** `NEXT_PUBLIC_`-Prefix). Darf **niemals**
+  aus einer `"use client"`-Datei importiert werden.
+- `dashboard/src/app/emails/actions.ts`, `dashboard/src/app/settings/actions.ts` — Server
+  Actions (`"use server"`), die diesen Client nutzen. Konstanten (Query-Strings, Status-Listen)
+  liegen separat in `emails/constants.ts`, weil eine `"use server"`-Datei nur async Functions
+  exportieren darf.
+- Client-Komponenten (`EmailFeed.tsx`, `settings/page.tsx`) rufen nur noch diese Server Actions
+  auf — es gibt **keinen** Supabase-Client mehr im Browser-Bundle.
+
+**Historisch:** Bis Juli 2026 lief `NEXT_PUBLIC_SUPABASE_ANON_KEY` mit dem echten
+Service-Role-Key (voller DB-Zugriff, RLS-Bypass) — dadurch war er ~104 Tage lang öffentlich im
+Browser-Bundle exponiert (Production/Preview/Development auf Vercel). Der Key sollte in Supabase
+rotiert worden sein (Settings → API); falls nicht, dringend nachholen.
 
 ---
 
@@ -177,9 +238,11 @@ Für `processing`-Mails: Entwurf-Textarea + "Bestätigen & Senden" / "Ablehnen" 
 | Problem | Wahrscheinlichste Ursache | Lösung |
 |---|---|---|
 | "Trotzdem bearbeiten" klassifiziert erneut als Spam | PM2 läuft noch alten Code | `pm2 restart petul-mail-automation --update-env` |
-| Vorschau der Antwort fehlt komplett | Pipeline liefert `status: failed` | `pm2 logs petul-mail-automation --lines 50` prüfen |
+| Vorschau der Antwort fehlt komplett | Pipeline liefert `status: failed` | `pm2 logs petul-mail-automation --lines 50` prüfen; `agent_logs.pipeline_errors` im Dashboard-Panel zeigt jetzt auch unerwartete Fehler (nicht mehr nur die "sauberen" Fehlerpfade) |
 | Antwort auf Deutsch trotz englischer Mail | Alter Code im PM2-Prozess | PM2 neu starten; dann `03_action.md` + `03_actionAgent.ts` prüfen |
-| Mail erscheint nicht im Dashboard | IMAP-Verbindung verloren | Passiert automatisch — aber Logs prüfen |
+| Mail erscheint nicht im Dashboard | IMAP-Verbindung verloren, ODER Mail ist `archived` (> 30 Tage untätig) | IMAP: Logs prüfen (automatischer Reconnect). Archiviert: bewusst so, Daten sind erhalten, nur nicht in der aktiven Ansicht |
+| Genehmigte Mail wird nie gesendet | **(behoben)** `processOutbound()` fragte bis Juli 2026 nicht-existente Spalten ab (`empfaenger`/`forward_target` sind nur in `agent_logs`, nicht eigene Spalten) — jeder Sendeversuch schlug mit 400 fehl, still verschluckt. Dadurch wurde in der gesamten Projektlaufzeit nur 1 Mail je gesendet | Falls es wieder auftritt: `pm2 logs` auf wiederholte Fehler von `processOutbound` prüfen (wird jetzt geloggt, nicht mehr verschluckt) |
+| Dashboard-Klick ("Neu prüfen"/"Trotzdem bearbeiten") scheint wirkungslos | Ein automatisch getriggerter Lauf für dieselbe Mail war noch aktiv und hat das Ergebnis überschrieben | **(behoben)** `queued_at`-Abgleich in `runAiPipeline()`/`writeResultIfCurrent()` verwirft jetzt veraltete Ergebnisse statt frische Klicks zu überschreiben |
 | Signatur falsch/leer | Platzhalter noch nicht ersetzt | `/settings` im Dashboard öffnen, echte Daten eintragen |
 
 ---

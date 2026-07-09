@@ -8,7 +8,15 @@ import {
     XCircle, Clock, Send, AlertTriangle, Loader2, Maximize2, X, Settings
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { createClient } from "@supabase/supabase-js";
+import {
+    fetchEmails as fetchEmailsAction,
+    selectMail,
+    updateHotel as updateHotelAction,
+    regenerateDraft,
+    forceProcess as forceProcessAction,
+    approveOrRejectMail,
+} from "./emails/actions";
+import { DONE_STATUSES } from "./emails/constants";
 
 type Email = {
     id: string;
@@ -40,10 +48,6 @@ function getApiActionLabel(action: string | undefined): { title: string; beschre
     };
     return map[action] ?? { title: action, beschreibung: "Aktion wird nach Bestätigung ausgeführt." };
 }
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 // ─── Status-Badge ──────────────────────────────────────────────────────────────
 
@@ -290,6 +294,32 @@ function StatusOverlay({ status, intent, onRegenerate, errors }: { status: strin
     return null;
 }
 
+// ─── Mail-Body-Rendering (geteilt zwischen Vorschau-Spalte, Vollbild-Modal, Ignored-Ansicht) ──
+
+function MailBodyContent({ email, className = "" }: { email: Email; className?: string }) {
+    if (email.body_html) {
+        return (
+            <div
+                className={`prose max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full ${className}`}
+                dangerouslySetInnerHTML={{ __html: email.body_html }}
+            />
+        );
+    }
+    return (
+        <div className={`whitespace-pre-wrap ${className}`}>
+            {(email.body_text || "")
+                .replace(/&zwnj;/g, "")
+                .replace(/&nbsp;/g, " ")
+                .replace(/&amp;/g, "&")
+                .replace(/&lt;/g, "<")
+                .replace(/&gt;/g, ">")
+                .replace(/&#\d+;/g, "")
+                .replace(/‌/g, "")
+                .trim()}
+        </div>
+    );
+}
+
 // ─── Mail-Vergrößerung (Vollbild-Ansicht) ─────────────────────────────────────
 
 function MailExpandModal({ email, onClose }: { email: Email; onClose: () => void }) {
@@ -345,24 +375,7 @@ function MailExpandModal({ email, onClose }: { email: Email; onClose: () => void
                     )}
 
                     <div className="text-[15px] leading-relaxed text-black/70">
-                        {email.body_html ? (
-                            <div
-                                className="prose max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full"
-                                dangerouslySetInnerHTML={{ __html: email.body_html }}
-                            />
-                        ) : (
-                            <div className="whitespace-pre-wrap">
-                                {(email.body_text || "")
-                                    .replace(/&zwnj;/g, "")
-                                    .replace(/&nbsp;/g, " ")
-                                    .replace(/&amp;/g, "&")
-                                    .replace(/&lt;/g, "<")
-                                    .replace(/&gt;/g, ">")
-                                    .replace(/&#\d+;/g, "")
-                                    .replace(/‌/g, "")
-                                    .trim()}
-                            </div>
-                        )}
+                        <MailBodyContent email={email} />
                     </div>
                 </div>
             </motion.div>
@@ -393,13 +406,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     // Schnelles Polling (5s) wenn aktive Mails vorhanden, sonst 30s
 
     const fetchEmails = useCallback(async () => {
-        const { data } = await supabase
-            .from("emails")
-            .select(`id, mail_id, betreff, body_text, body_html, received_at, status, intent,
-                     policy_decision_allowed, policy_decision_reason, api_action, draft_reply,
-                     agent_logs, senders!inner(email, name)`)
-            .order("received_at", { ascending: false })
-            .limit(50);
+        const data = await fetchEmailsAction();
         if (data) setEmails(data as Email[]);
     }, []);
 
@@ -467,18 +474,14 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     const handleSelectMail = async (email: Email) => {
         setSelectedId(email.id);
         if (email.status === "new") {
-            await supabase.from("emails").update({ status: "queued" }).eq("id", email.id);
+            await selectMail(email.id);
             await fetchEmails();
         }
     };
 
     const handleUpdateHotel = async (hotel: string) => {
         if (!currentMail) return;
-        await supabase.from("emails").update({
-            status: "queued",
-            intent: null,
-            agent_logs: { ...currentMail.agent_logs, target_hotel: hotel, ai_force_hotel: hotel },
-        }).eq("id", currentMail.id);
+        await updateHotelAction(currentMail.id, hotel, currentMail.agent_logs);
         await fetchEmails();
     };
 
@@ -493,16 +496,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         if (!currentMail) return;
         setActionStatus("regenerating");
         setStep(0);
-        await supabase.from("emails").update({
-            status: "queued",
-            intent: null,
-            api_action: null,
-            draft_reply: null,
-            agent_logs: {
-                target_hotel: currentMail.agent_logs?.target_hotel || null,
-                ai_force_hotel: currentMail.agent_logs?.ai_force_hotel || null,
-            },
-        }).eq("id", currentMail.id);
+        await regenerateDraft(currentMail.id, currentMail.agent_logs);
         setEditedDraft("");
         await fetchEmails();
         setActionStatus("idle");
@@ -512,19 +506,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         if (!currentMail) return;
         setActionStatus("regenerating");
         setStep(0);
-        await supabase.from("emails").update({
-            status: "queued",
-            intent: null,
-            api_action: null,
-            draft_reply: null,
-            agent_logs: {
-                target_hotel: currentMail.agent_logs?.target_hotel || null,
-                ai_force_hotel: currentMail.agent_logs?.ai_force_hotel || null,
-                empfaenger: currentMail.agent_logs?.empfaenger || null,
-                forward_target: currentMail.agent_logs?.forward_target || null,
-                force_process: true,
-            },
-        }).eq("id", currentMail.id);
+        await forceProcessAction(currentMail.id, currentMail.agent_logs);
         setEditedDraft("");
         await fetchEmails();
         setActionStatus("idle");
@@ -534,11 +516,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         if (!currentMail) return;
         const currentId = currentMail.id;
         setActionStatus(action === "approve" ? "approving" : "rejecting");
-        if (action === "approve") {
-            await supabase.from("emails").update({ draft_reply: editedDraft, status: "approved" }).eq("id", currentId);
-        } else {
-            await supabase.from("emails").update({ status: "rejected" }).eq("id", currentId);
-        }
+        await approveOrRejectMail(currentId, action, action === "approve" ? editedDraft : undefined);
         await fetchEmails();
         setActionStatus("idle");
         // Nach kurzer Verzögerung zur nächsten Mail wechseln
@@ -567,7 +545,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                         className="absolute inset-0 flex bg-white overflow-hidden"
                     >
                         {/* ── LINKE SIDEBAR ── */}
-                        <div className="w-52 shrink-0 border-r border-black/10 flex flex-col bg-[#444444] text-white">
+                        <div className="w-64 shrink-0 border-r border-black/10 flex flex-col bg-[#444444] text-white">
                             <div className="px-5 pt-5 pb-4">
                                 <div className="flex items-start justify-between mb-3">
                                     <div className="flex flex-col">
@@ -600,27 +578,41 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                         Keine Mails
                                     </div>
                                 )}
-                                {emails.slice(0, 30).map((email) => (
-                                    <button
-                                        key={email.id}
-                                        onClick={() => handleSelectMail(email)}
-                                        className={`w-full text-left px-3 py-2.5 mb-0.5 transition-all duration-150 border-l-2 ${
-                                            selectedId === email.id
-                                                ? "bg-white/10 border-[#6082B6] text-white"
-                                                : "hover:bg-white/5 border-transparent text-white/45"
-                                        }`}
-                                    >
-                                        <div className="text-[11px] font-bold truncate mb-0.5 leading-snug">
-                                            {email.betreff || "Kein Betreff"}
+                                {emails.map((email, idx) => {
+                                    const isDone = DONE_STATUSES.includes(email.status ?? "");
+                                    const prevIsDone = idx > 0 && DONE_STATUSES.includes(emails[idx - 1].status ?? "");
+                                    const showDivider = isDone && (idx === 0 || !prevIsDone);
+                                    return (
+                                        <div key={email.id}>
+                                            {showDivider && (
+                                                <div className="px-3 pt-4 pb-1.5 text-[8px] font-black uppercase tracking-widest text-white/25">
+                                                    Erledigt
+                                                </div>
+                                            )}
+                                            <button
+                                                onClick={() => handleSelectMail(email)}
+                                                className={`w-full text-left px-3 py-2.5 mb-0.5 transition-all duration-150 border-l-2 ${
+                                                    selectedId === email.id
+                                                        ? "bg-white/10 border-[#6082B6] text-white"
+                                                        : "hover:bg-white/5 border-transparent text-white/45"
+                                                }`}
+                                            >
+                                                <div className="text-[11px] font-bold truncate mb-0.5 leading-snug">
+                                                    {email.betreff || "Kein Betreff"}
+                                                </div>
+                                                <div className="text-[9px] truncate mb-1 opacity-45">
+                                                    {email.senders?.[0]?.name || email.senders?.[0]?.email || "Unbekannter Absender"}
+                                                </div>
+                                                <div className="flex items-center justify-between gap-1 mt-1">
+                                                    <div className="text-[9px] font-bold uppercase tracking-widest opacity-30">
+                                                        {new Date(email.received_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr
+                                                    </div>
+                                                    <StatusDot status={email.status} />
+                                                </div>
+                                            </button>
                                         </div>
-                                        <div className="flex items-center justify-between gap-1 mt-1">
-                                            <div className="text-[9px] font-bold uppercase tracking-widest opacity-30">
-                                                {new Date(email.received_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr
-                                            </div>
-                                            <StatusDot status={email.status} />
-                                        </div>
-                                    </button>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
 
@@ -683,8 +675,43 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                     {/* CONTENT: 3 Spalten */}
                                     <div className="flex-1 grid grid-cols-12 min-h-0 overflow-hidden">
 
+                                        {/* ── SPALTE 0: EINGEHENDE MAIL (Vorschau, permanent sichtbar) ── */}
+                                        <div className="col-span-3 flex flex-col bg-[#FAFAF8] border-r border-black/8 overflow-hidden">
+                                            <div className="shrink-0 px-4 py-3 border-b border-black/5 flex items-center justify-between gap-2 text-black/25">
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                                                    <span className="text-[9px] font-black uppercase tracking-[0.35em]">Eingehende Mail</span>
+                                                </div>
+                                                <button
+                                                    onClick={() => setIsMailExpanded(true)}
+                                                    title="Vollbild anzeigen"
+                                                    className="shrink-0 hover:text-black transition-colors"
+                                                >
+                                                    <Maximize2 className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                            <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                                                <div className="mb-3 pb-3 border-b border-black/5">
+                                                    <div className="text-[8px] uppercase font-black tracking-widest text-black/20 mb-1">Betreff</div>
+                                                    <h3 className="text-[13px] font-bold tracking-tight leading-snug text-black break-words">
+                                                        {currentMail.betreff || "Kein Betreff"}
+                                                    </h3>
+                                                </div>
+                                                {currentMail.senders?.[0] && (
+                                                    <div className="mb-3 text-[10px] text-black/40 break-words leading-snug">
+                                                        {currentMail.senders[0].name
+                                                            ? `${currentMail.senders[0].name} <${currentMail.senders[0].email}>`
+                                                            : currentMail.senders[0].email}
+                                                    </div>
+                                                )}
+                                                <div className="text-[12px] leading-relaxed text-black/60">
+                                                    <MailBodyContent email={currentMail} />
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         {/* ── SPALTE 1: ANTWORT-ENTWURF ── */}
-                                        <div className="col-span-8 flex flex-col bg-white border-r border-black/8 overflow-hidden">
+                                        <div className="col-span-6 flex flex-col bg-white border-r border-black/8 overflow-hidden">
                                             <div className="shrink-0 px-8 py-3 border-b border-black/5 flex items-center justify-between">
                                                 <div className="flex items-center gap-2.5">
                                                     <span className="text-[9px] font-black uppercase tracking-[0.35em] text-[#6082B6]">Antwort-Entwurf</span>
@@ -767,24 +794,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         </div>
                                                         {/* Mail-Body — nur lesbar */}
                                                         <div className="flex-1 overflow-y-auto custom-scrollbar px-10 py-8 text-[15px] leading-relaxed text-black/55">
-                                                            {currentMail.body_html ? (
-                                                                <div
-                                                                    className="prose max-w-none break-words overflow-hidden [&_*]:max-w-full [&_img]:max-w-full [&_table]:w-full"
-                                                                    dangerouslySetInnerHTML={{ __html: currentMail.body_html }}
-                                                                />
-                                                            ) : (
-                                                                <div className="whitespace-pre-wrap">
-                                                                    {(currentMail.body_text || "")
-                                                                        .replace(/&zwnj;/g, "")
-                                                                        .replace(/&nbsp;/g, " ")
-                                                                        .replace(/&amp;/g, "&")
-                                                                        .replace(/&lt;/g, "<")
-                                                                        .replace(/&gt;/g, ">")
-                                                                        .replace(/&#\d+;/g, "")
-                                                                        .replace(/‌/g, "")
-                                                                        .trim()}
-                                                                </div>
-                                                            )}
+                                                            <MailBodyContent email={currentMail} />
                                                         </div>
                                                     </div>
                                                 );
@@ -866,7 +876,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                         </div>
 
                                         {/* ── SPALTE 2: INSIGHTS ── */}
-                                        <div className="col-span-4 flex flex-col bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
+                                        <div className="col-span-3 flex flex-col bg-[#F9F9F9] overflow-y-auto custom-scrollbar">
                                             <div className="shrink-0 px-4 py-3 border-b border-black/5 flex items-center gap-2 text-black/25">
                                                 <Database className="w-3.5 h-3.5 text-[#6082B6]" />
                                                 <span className="text-[9px] font-black uppercase tracking-[0.35em]">Ergebnisse</span>

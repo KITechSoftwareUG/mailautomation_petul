@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Save, Check, Loader2 } from "lucide-react";
-import { supabase } from "@/utils/supabase/client";
+import { fetchSignatures, saveSignature } from "./actions";
 
 type SignatureRow = {
     id: string;
@@ -22,18 +22,14 @@ export default function SettingsPage() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        supabase
-            .from("hotel_signatures")
-            .select("id, hotel_id, hotel_name, signature")
-            .order("hotel_id", { ascending: true })
-            .then(({ data }) => {
-                if (data) {
-                    setRows(data);
-                    setSelectedId(data[0]?.id ?? null);
-                    setDraft(data[0]?.signature ?? "");
-                }
-                setLoading(false);
-            });
+        fetchSignatures().then((data) => {
+            if (data) {
+                setRows(data);
+                setSelectedId(data[0]?.id ?? null);
+                setDraft(data[0]?.signature ?? "");
+            }
+            setLoading(false);
+        });
     }, []);
 
     const currentRow = rows.find((r) => r.id === selectedId);
@@ -47,10 +43,7 @@ export default function SettingsPage() {
     const handleSave = async () => {
         if (!currentRow) return;
         setSaving(true);
-        await supabase
-            .from("hotel_signatures")
-            .update({ signature: draft, updated_at: new Date().toISOString() })
-            .eq("id", currentRow.id);
+        await saveSignature(currentRow.id, draft);
         setRows((prev) => prev.map((r) => (r.id === currentRow.id ? { ...r, signature: draft } : r)));
         setSaving(false);
         setSaved(true);

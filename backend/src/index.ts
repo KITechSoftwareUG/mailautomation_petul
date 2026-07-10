@@ -506,6 +506,58 @@ async function watchNewMails() {
     }
 }
 
+// ─── Fallback: Supabase nicht erreichbar (z.B. Egress-Kontingent überschritten) ──
+// Ohne DB kann weder ein KI-Entwurf gespeichert noch von der Rezeptionistin freigegeben
+// werden. Statt die Mail stillschweigend zu verlieren, schickt der Bot in diesem Fall
+// eine einfache statische Eingangsbestätigung — kein KI-Entwurf, keine PMS-Daten, nichts,
+// was inhaltlich falsch sein könnte. Sobald process_incoming_email wieder funktioniert,
+// läuft automatisch wieder die normale Pipeline — kein Code-Revert nötig.
+async function sendFallbackAcknowledgement(mailData: any) {
+    const hotel = identifyHotel(mailData.empfaenger, mailData.forward_target, null);
+    const hotelName = hotel?.name || "Petul Hotels";
+
+    // Grobe Spam/Portal/System-Filterung per KI (kein DB-Zugriff nötig) — verhindert, dass
+    // Newsletter/Systembenachrichtigungen automatisch eine "Danke für Ihre Anfrage" bekommen.
+    try {
+        const intentData = await processIntent(
+            { ...mailData, body_text: (mailData.body_text || "").slice(0, 3000) },
+            "Keine Historie vorhanden."
+        );
+        const IGNORE_CATEGORIES = ["Spam/Irrelevant", "Portal-Benachrichtigung", "System-Benachrichtigung"];
+        if (IGNORE_CATEGORIES.includes(intentData.kategorie)) {
+            console.log(`   ⏭️  Fallback: ${intentData.kategorie} — keine automatische Antwort`);
+            return;
+        }
+    } catch (err: any) {
+        console.warn(`   ⚠️  Fallback: Intent-Check fehlgeschlagen (${err.message}) — sende Vorlage trotzdem`);
+    }
+
+    const body = `Vielen Dank für Ihre Nachricht an ${hotelName}.
+
+Wir haben Ihre E-Mail erhalten und melden uns so schnell wie möglich persönlich bei Ihnen zurück.
+
+---
+
+Thank you for your message to ${hotelName}.
+
+We have received your e-mail and will personally get back to you as soon as possible.
+
+Mit freundlichen Grüßen / Best regards
+Ihr Team von ${hotelName}`;
+
+    try {
+        await transporter.sendMail({
+            from: `"${hotelName}" <${process.env.IMAP_USER}>`,
+            to: mailData.absender,
+            subject: `Re: ${mailData.betreff}`,
+            text: body,
+        });
+        console.log(`   ✉️  Fallback-Vorlage gesendet an ${mailData.absender}`);
+    } catch (err: any) {
+        console.error(`   ❌ Fallback-Mail fehlgeschlagen (${mailData.mail_id}):`, err.message);
+    }
+}
+
 // ─── IMAP Listener ────────────────────────────────────────────────────────────
 
 async function startListener() {
@@ -583,6 +635,8 @@ async function startListener() {
 
                 if (dbError) {
                     console.error("❌ RPC Fehler:", dbError.message);
+                    await sendFallbackAcknowledgement(mailData);
+                    await client.messageFlagsAdd(msg.seq, ["\\Seen"]);
                     continue;
                 }
 

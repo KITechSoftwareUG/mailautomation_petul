@@ -473,9 +473,11 @@ async function processOutbound() {
 
 async function watchNewMails() {
     try {
+        // Nur die tatsächlich benötigten Spalten — body_html wird hier nie verwendet und
+        // war bei diesem alle 1,5s laufenden Poller ein unnötig großer Egress-Treiber.
         const { data: newMails, error } = await supabase
             .from("emails")
-            .select("*, senders!inner(email, name)")
+            .select("mail_id, betreff, body_text, thread_id, agent_logs, senders!inner(email, name)")
             .eq("status", "queued")
             .limit(5);
 
@@ -689,7 +691,10 @@ process.on("unhandledRejection", (reason) => console.error("Unhandled:", reason)
 
 warmProductCache().then(() => {
     setInterval(processOutbound, 10000);
-    setInterval(watchNewMails, 1500);  // Schnell pollen — kurze Wartezeit nach Dashboard-Klick
+    // watchNewMails ist nur noch Sicherheitsnetz (neue Mails triggern die Pipeline direkt im
+    // IMAP-Handler) — 1,5s war unnötig aggressiv und hat spürbar zum Supabase-Egress-Verbrauch
+    // beigetragen. 5s ist als Wartezeit nach einem Dashboard-Klick immer noch unauffällig kurz.
+    setInterval(watchNewMails, 5000);
     setInterval(archiveStaleMails, 6 * 3600 * 1000); // alle 6h
     archiveStaleMails().catch(console.error);
     startListener().catch(console.error);

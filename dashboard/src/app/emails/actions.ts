@@ -1,19 +1,19 @@
 "use server";
 
 import { supabaseAdmin } from "@/utils/supabase/server";
-import { EMAIL_SELECT, ACTIVE_STATUSES, DONE_STATUSES } from "./constants";
+import { EMAIL_LIST_SELECT, ACTIVE_STATUSES, DONE_STATUSES } from "./constants";
 
 export async function fetchEmails() {
     const [activeResult, doneResult] = await Promise.all([
         supabaseAdmin
             .from("emails")
-            .select(EMAIL_SELECT)
+            .select(EMAIL_LIST_SELECT)
             .in("status", ACTIVE_STATUSES)
             .order("received_at", { ascending: false })
             .limit(300),
         supabaseAdmin
             .from("emails")
-            .select(EMAIL_SELECT)
+            .select(EMAIL_LIST_SELECT)
             .in("status", DONE_STATUSES)
             .order("received_at", { ascending: false })
             .limit(50),
@@ -26,6 +26,22 @@ export async function fetchEmails() {
     // Moment (z.B. approved → sent), könnte sie in beiden Ergebnissen auftauchen. Dedupe by id.
     const merged = [...(activeResult.data ?? []), ...(doneResult.data ?? [])];
     return Array.from(new Map(merged.map((e: any) => [e.id, e])).values());
+}
+
+// Body wird nur für die gerade ausgewählte Mail nachgeladen, nicht für die ganze Liste
+// (siehe Kommentar bei EMAIL_LIST_SELECT — das war der Haupttreiber für den Egress-Überlauf).
+export async function fetchEmailBody(emailId: string) {
+    const { data, error } = await supabaseAdmin
+        .from("emails")
+        .select("id, body_text, body_html")
+        .eq("id", emailId)
+        .maybeSingle();
+
+    if (error) {
+        console.error("fetchEmailBody Fehler:", error.message);
+        return null;
+    }
+    return data;
 }
 
 // queued_at markiert jede Neu-Anstoß-Aktion mit einem frischen Zeitstempel.

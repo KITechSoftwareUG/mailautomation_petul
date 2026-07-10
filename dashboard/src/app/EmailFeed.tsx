@@ -10,6 +10,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import {
     fetchEmails as fetchEmailsAction,
+    fetchEmailBody,
     selectMail,
     updateHotel as updateHotelAction,
     regenerateDraft,
@@ -402,8 +403,29 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     const pendingCount = emails.filter((e) => e.status === "processing").length;
     const currentMail = emails.find((e) => e.id === selectedId);
 
+    // ─── Mail-Body: gezielt pro ausgewählter Mail nachladen ──────────────────
+    // Die Liste/das Polling liefert bewusst KEINEN body_text/body_html mehr (siehe
+    // emails/constants.ts) — das war der Haupttreiber für den Supabase-Egress-Überlauf.
+    const [mailBody, setMailBody] = useState<{ id: string; body_text?: string; body_html?: string } | null>(null);
+    const [loadingBody, setLoadingBody] = useState(false);
+
+    useEffect(() => {
+        if (!selectedId) { setMailBody(null); return; }
+        let cancelled = false;
+        setLoadingBody(true);
+        fetchEmailBody(selectedId).then((data) => {
+            if (!cancelled && data) setMailBody(data);
+            if (!cancelled) setLoadingBody(false);
+        });
+        return () => { cancelled = true; };
+    }, [selectedId]);
+
+    const currentMailWithBody = currentMail
+        ? { ...currentMail, ...(mailBody?.id === currentMail.id ? mailBody : { body_text: undefined, body_html: undefined }) }
+        : null;
+
     // ─── Realtime-ähnliches Polling ─────────────────────────────────────────
-    // Schnelles Polling (5s) wenn aktive Mails vorhanden, sonst 30s
+    // Schnelles Polling (8s) wenn aktive Mails vorhanden, sonst 30s
 
     const fetchEmails = useCallback(async () => {
         const data = await fetchEmailsAction();
@@ -412,7 +434,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
 
     useEffect(() => {
         const hasActive = emails.some((e) => e.status === "queued" || e.status === "approved");
-        const interval = setInterval(fetchEmails, hasActive ? 5000 : 30000);
+        const interval = setInterval(fetchEmails, hasActive ? 8000 : 45000);
         return () => clearInterval(interval);
     }, [emails, fetchEmails]);
 
@@ -705,7 +727,14 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     </div>
                                                 )}
                                                 <div className="text-[12px] leading-relaxed text-black/60">
-                                                    <MailBodyContent email={currentMail} />
+                                                    {loadingBody && mailBody?.id !== currentMail.id ? (
+                                                        <div className="flex items-center gap-2 text-black/25">
+                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                            <span className="text-[10px] uppercase tracking-widest">Lädt...</span>
+                                                        </div>
+                                                    ) : (
+                                                        <MailBodyContent email={currentMailWithBody!} />
+                                                    )}
                                                 </div>
                                             </div>
                                         </div>
@@ -794,7 +823,14 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         </div>
                                                         {/* Mail-Body — nur lesbar */}
                                                         <div className="flex-1 overflow-y-auto custom-scrollbar px-10 py-8 text-[15px] leading-relaxed text-black/55">
-                                                            <MailBodyContent email={currentMail} />
+                                                            {loadingBody && mailBody?.id !== currentMail.id ? (
+                                                                <div className="flex items-center gap-2 text-black/25">
+                                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                                    <span className="text-[10px] uppercase tracking-widest">Lädt...</span>
+                                                                </div>
+                                                            ) : (
+                                                                <MailBodyContent email={currentMailWithBody!} />
+                                                            )}
                                                         </div>
                                                     </div>
                                                 );
@@ -1105,8 +1141,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
             </AnimatePresence>
 
             <AnimatePresence>
-                {isMailExpanded && currentMail && (
-                    <MailExpandModal email={currentMail} onClose={() => setIsMailExpanded(false)} />
+                {isMailExpanded && currentMailWithBody && (
+                    <MailExpandModal email={currentMailWithBody} onClose={() => setIsMailExpanded(false)} />
                 )}
             </AnimatePresence>
         </div>

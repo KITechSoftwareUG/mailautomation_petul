@@ -49,10 +49,16 @@ export async function fetchEmailBody(emailId: string) {
 // läuft noch eine ältere Analyse für dieselbe Mail, wird ihr (dann veraltetes)
 // Ergebnis verworfen statt den frischen Klick hier stillschweigend zu überschreiben.
 
-export async function selectMail(emailId: string) {
+export async function selectMail(emailId: string, currentAgentLogs?: any) {
     const { error } = await supabaseAdmin
         .from("emails")
-        .update({ status: "queued", agent_logs: { queued_at: new Date().toISOString() } })
+        .update({
+            status: "queued",
+            // agent_logs zusammenführen statt überschreiben — empfaenger/forward_target sind
+            // der primäre, deterministische Hotel-Erkennungsweg (siehe regenerateDraft-Kommentar
+            // unten). Gingen sie hier verloren, fällt identifyHotel auf KI-Raten zurück.
+            agent_logs: { ...(currentAgentLogs || {}), queued_at: new Date().toISOString() },
+        })
         .eq("id", emailId)
         .eq("status", "new");
 

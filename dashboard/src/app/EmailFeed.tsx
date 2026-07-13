@@ -469,9 +469,18 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     }, [selectedId, currentMail?.draft_reply]);
 
     // ─── Agent-Progress-Animation ────────────────────────────────────────────
+    // Nur animieren, wenn wirklich noch kein Entwurf da ist (z.B. Status "processing"
+    // wird zwar sofort mit fertigem draft_reply erreicht — Status heißt per Definition
+    // "Entwurf ist fertig"). Liegt der Entwurf schon vor, sofort voll anzeigen statt
+    // Text und Aktions-Buttons künstlich 2s zu verstecken/sperren — die KI-Pipeline lief
+    // längst im Hintergrund, das hier ist nur eine Ziereffekt-Animation, kein echter Ladevorgang.
 
     useEffect(() => {
         if (!currentMail) return;
+        if (currentMail.draft_reply) {
+            setStep(4);
+            return;
+        }
         setStep(0);
         const timers = [
             setTimeout(() => setStep(1), 500),
@@ -496,7 +505,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     const handleSelectMail = async (email: Email) => {
         setSelectedId(email.id);
         if (email.status === "new") {
-            await selectMail(email.id);
+            await selectMail(email.id, email.agent_logs);
             await fetchEmails();
         }
     };

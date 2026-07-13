@@ -206,16 +206,26 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         }
 
         // 3. Hotel identifizieren
-        const hotel = identifyHotel(
+        // Manuelle Auswahl im Dashboard (agent_logs.ai_force_hotel, gesetzt von updateHotel())
+        // hat absoluten Vorrang — die Rezeptionistin greift damit gezielt ein, wenn Header
+        // und KI-Vermutung beide schon gescheitert sind (genau deshalb war der Selector nötig).
+        // Ohne diesen Vorrang würde derselbe erneute Pipeline-Lauf wieder dieselbe Mehrdeutigkeit
+        // produzieren und die manuelle Auswahl folgenlos verpuffen.
+        const forcedHotel = mailData.ai_force_hotel
+            ? HOTELS.find(h => h.name === mailData.ai_force_hotel) || null
+            : null;
+        const hotel = forcedHotel || identifyHotel(
             mailData.empfaenger,
             mailData.forward_target,
             intentData.extracted_entities.hotel_identifiziert
         );
         const hotelApiKey = hotel?.key || "";
         const resolvedHotel = hotel?.name || "Unbekannt / Petul";
-        const hotelSource = hotel
-            ? (mailData.forward_target && hotel.email && mailData.forward_target.toLowerCase().includes(hotel.email) ? "email-header" : "ai-oder-keyword")
-            : "unbekannt";
+        const hotelSource = forcedHotel
+            ? "manuell (Dashboard)"
+            : hotel
+                ? (mailData.forward_target && hotel.email && mailData.forward_target.toLowerCase().includes(hotel.email) ? "email-header" : "ai-oder-keyword")
+                : "unbekannt";
         console.log(`   → Hotel: ${resolvedHotel} (Quelle: ${hotelSource})`);
 
         // 4. Policy + 3RPMS-Lookup parallel — spart ~3-5s
@@ -498,6 +508,7 @@ async function watchNewMails() {
                 forward_target: (mail.agent_logs as any)?.forward_target || "",
                 force_process: !!(mail.agent_logs as any)?.force_process,
                 queued_at: (mail.agent_logs as any)?.queued_at || null,
+                ai_force_hotel: (mail.agent_logs as any)?.ai_force_hotel || null,
             };
             await runAiPipeline(mailData, mail.thread_id);
         }

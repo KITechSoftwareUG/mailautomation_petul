@@ -16,7 +16,7 @@ IMAP-Listener (imapflow)
 Supabase (emails-Tabelle, status: "new")
        ↓ SOFORT automatisch (kein Dashboard-Klick nötig, seit Commit 0d64d15)
 Status: "queued"
-       ↓ runAiPipeline() wird direkt aufgerufen; watchNewMails-Poller (1,5s) ist
+       ↓ runAiPipeline() wird direkt aufgerufen; watchNewMails-Poller (5s) ist
        ↓ das Sicherheitsnetz für alles, was zusätzlich auf "queued" gesetzt wird
        ↓ (Dashboard-Klicks wie "Neu prüfen"/"Trotzdem bearbeiten"/Hotel ändern,
        ↓ oder ein Prozess-Neustart mitten in einem Lauf)
@@ -92,7 +92,7 @@ new/processing/failed → archived (automatisch nach 30 Tagen ohne Aktion, s.o.)
 - `new`: Mail eingetroffen — wird vom IMAP-Listener sofort automatisch auf `queued` gesetzt
   (kein Dashboard-Klick mehr nötig). Bleibt nur "new" hängen, wenn dieser Schritt fehlschlägt.
 - `queued`: Pipeline läuft/wartet auf Verarbeitung (automatisch getriggert ODER durch einen
-  Dashboard-Klick erneut angestoßen — beides landet im selben `watchNewMails`-Poller, 1,5s)
+  Dashboard-Klick erneut angestoßen — beides landet im selben `watchNewMails`-Poller, 5s)
 - `processing`: Pipeline fertig, `draft_reply` gesetzt, wartet auf Freigabe
 - `approved`: Rezeptionistin hat bestätigt → processOutbound sendet (10s-Poller)
 - `sent` / `failed` / `rejected`: Endstatus
@@ -141,6 +141,20 @@ Implementierung: `backend/src/index.ts`, Funktion `runAiPipeline`.
 
 ⚠️ Die Schlüssel-Nummern in den Env-Vars stimmen nicht mit den Hotel-IDs überein — historisch gewachsen, nicht ändern.
 
+**Hotel-Erkennung (Priorität, seit Commit 7c2c32c):** `identifyHotel()` (`backend/src/utils/threerpms.ts`)
+entscheidet in dieser Reihenfolge:
+1. **Manuelle Dashboard-Auswahl** (`agent_logs.ai_force_hotel`) — absoluter Vorrang, gesetzt über
+   `updateHotel()` (`dashboard/src/app/emails/actions.ts`), wenn die Rezeptionistin das Hotel im
+   "Ziel-Etablissement"-Selector explizit wählt. Wird in `runAiPipeline()` (`backend/src/index.ts`)
+   VOR dem eigentlichen `identifyHotel()`-Aufruf geprüft (`forcedHotel`-Variable).
+2. Deterministischer E-Mail-Match gegen `X-Original-To`/`Delivered-To`-Header (`forward_target`)
+3. KI-Vermutung des Intent Agents (`extracted_entities.hotel_identifiziert`)
+4. Keyword-Suche in Empfänger-Adresse
+
+**Wichtig:** `ai_force_hotel` muss über `watchNewMails()` aus `agent_logs` in `mailData` durchgereicht
+werden, sonst kommt die manuelle Auswahl beim Backend nie an (das war monatelang der Fall — die
+Hotel-Auswahl im Dashboard hatte keinerlei Effekt, s. Häufige Probleme unten).
+
 ---
 
 ## Supabase-Tabellen (wichtigste)
@@ -152,8 +166,17 @@ Implementierung: `backend/src/index.ts`, Funktion `runAiPipeline`.
 | `hotel_signatures` | Konfigurierbare Signaturen pro Hotel — editierbar im Dashboard `/settings` |
 
 `emails.agent_logs` (JSONB) enthält: `intentData`, `policyData`, `actionData`, `threeRpmsData`,
-`target_hotel`, `empfaenger`, `forward_target`, `force_process`, `queued_at` (Zeitstempel des
-letzten Neu-Anstoßes, für den Race-Condition-Schutz — s. Status-Fluss oben), `pipeline_errors`.
+`inventoryData`, `target_hotel` (aufgelöster Hotelname, vom Backend gesetzt), `ai_force_hotel`
+(manuelle Hotel-Wahl aus dem Dashboard, hat Vorrang — s. Hotel-Erkennung oben), `hotel_source`
+(`"manuell (Dashboard)"` / `"email-header"` / `"ai-oder-keyword"` / `"unbekannt"`), `empfaenger`,
+`forward_target`, `force_process`, `queued_at` (Zeitstempel des letzten Neu-Anstoßes, für den
+Race-Condition-Schutz — s. Status-Fluss oben), `pipeline_errors`.
+
+**Jede Aktion in `dashboard/src/app/emails/actions.ts`, die `agent_logs` schreibt, MUSS es mit
+`{ ...currentAgentLogs, ... }` mergen, niemals überschreiben** — sonst gehen `empfaenger`/
+`forward_target`/`ai_force_hotel` verloren und die Hotel-/PMS-Erkennung fällt beim nächsten
+Pipeline-Lauf auf unzuverlässiges Raten zurück (genau das war der Bug in `selectMail()`, behoben
+in Commit 7c2c32c).
 
 **Wichtig:** `empfaenger`/`forward_target` sind NUR in `agent_logs` — keine eigenen Spalten der
 `emails`-Tabelle. Ein `.select()`/`.update()` mit diesen Namen als Top-Level-Spalten schlägt
@@ -237,6 +260,10 @@ rotiert worden sein (Settings → API); falls nicht, dringend nachholen.
 
 | Problem | Wahrscheinlichste Ursache | Lösung |
 |---|---|---|
+| **Backend tut nichts, alle Mails bleiben liegen, `pm2 logs` voller Fehler** | ⚠️ **Laufender Incident, Stand 14.07.2026:** Supabase-Egress-Kontingent überschritten (`exceed_egress_quota`) — Supabase blockiert das GESAMTE Projekt, jeder DB-Zugriff (`watchNewMails`, `processOutbound`, `archiveStaleMails`) schlägt fehl. Kein Code-Bug — 3RPMS selbst läuft parallel einwandfrei (Settings laden beim PM2-Start normal). | **Prüfen, ob noch aktiv:** `pm2 logs petul-mail-automation --lines 20` — Text `exceed_egress_quota` = noch blockiert. **Fix (nur der Projekt-Owner kann das):** Supabase-Dashboard (Projekt `uxqcpmnanjfyztyhsdsi`) → Settings → Billing → Plan upgraden oder Spend-Cap entfernen. Ist es behoben, diese Zeile aus der Tabelle entfernen. |
+| Manuelle Hotel-Wahl im Dashboard-Selector ändert nichts an PMS-Daten/Entwurf | **(behoben, Commit 7c2c32c)** `agent_logs.ai_force_hotel` wurde im Backend nie gelesen — jeder Pipeline-Re-Run hat das Hotel erneut (ggf. wieder falsch/unklar) bestimmt, die manuelle Auswahl verpuffte folgenlos | `runAiPipeline()` prüft `ai_force_hotel` jetzt zuerst, mit absolutem Vorrang (s. Hotel-Erkennung oben). Falls wieder wirkungslos: PM2-Neustart nach der letzten Backend-Änderung geprüft? |
+| Entwurf/"Kopieren"/"Bestätigen & Senden" wirken nach Mail-Klick 2s eingefroren | **(behoben, Commit 7c2c32c)** `EmailFeed.tsx` hatte eine feste 2s-Fake-Progress-Animation (Text bei `opacity: 0.04`, Buttons gesperrt) — obwohl Status `processing` den Entwurf per Definition schon fertig bedeutet | Animation springt jetzt sofort auf `step=4`, sobald `draft_reply` bereits vorhanden ist — echte Wartezeit nur noch, wenn tatsächlich kein Entwurf da ist |
+| Mail bleibt bei Klick auf eine "neue" Mail ohne Hotel-/PMS-Daten hängen | **(behoben, Commit 7c2c32c)** `selectMail()` in `emails/actions.ts` überschrieb `agent_logs` komplett statt zu mergen — `empfaenger`/`forward_target` (primärer Hotel-Erkennungsweg) gingen verloren | `selectMail()` merged jetzt `currentAgentLogs` wie die übrigen Aktionen (`updateHotel`/`regenerateDraft`/`forceProcess`) |
 | "Trotzdem bearbeiten" klassifiziert erneut als Spam | PM2 läuft noch alten Code | `pm2 restart petul-mail-automation --update-env` |
 | Vorschau der Antwort fehlt komplett | Pipeline liefert `status: failed` | `pm2 logs petul-mail-automation --lines 50` prüfen; `agent_logs.pipeline_errors` im Dashboard-Panel zeigt jetzt auch unerwartete Fehler (nicht mehr nur die "sauberen" Fehlerpfade) |
 | Antwort auf Deutsch trotz englischer Mail | Alter Code im PM2-Prozess | PM2 neu starten; dann `03_action.md` + `03_actionAgent.ts` prüfen |

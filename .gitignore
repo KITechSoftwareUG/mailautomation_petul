@@ -12,3 +12,4 @@ logs
 mcp.json
 package-lock.json
 .vercel
+.tmp

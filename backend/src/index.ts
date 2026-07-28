@@ -95,6 +95,35 @@ const transporter = nodemailer.createTransport({
 const hotelProductsCache: Record<string, any> = {};
 const pipelineInProgress = new Set<string>(); // verhindert doppelte Verarbeitung
 
+// ─── Backoff bei wiederholten Supabase-Fehlern ────────────────────────────────
+// Ein anhaltender DB-Ausfall (Egress-Sperre, Wartungsfenster, kurze Aufwachphase nach
+// einer Pause) sorgte bisher dafür, dass watchNewMails/processOutbound minutenlang im
+// festen 5s/10s-Takt exakt dieselbe Fehlermeldung produzieren — unnötige Last und
+// Log-Spam genau dann, wenn eh schon etwas nicht stimmt. Ab 3 Fehlern in Folge wird die
+// Pause zwischen Versuchen exponentiell verlängert (bis max. 2 Minuten); ein einzelner
+// erfolgreicher Request setzt sofort auf die normale Taktung zurück.
+let consecutiveDbFailures = 0;
+
+function nextDelay(baseMs: number): number {
+    if (consecutiveDbFailures < 3) return baseMs;
+    const factor = Math.min(consecutiveDbFailures - 2, 5);
+    return Math.min(baseMs * Math.pow(2, factor), 120000);
+}
+
+function reportDbFailure() {
+    consecutiveDbFailures++;
+    if (consecutiveDbFailures === 3) {
+        console.warn("⏸️  3 DB-Fehler in Folge — drossle Polling schrittweise, bis Supabase wieder antwortet.");
+    }
+}
+
+function reportDbSuccess() {
+    if (consecutiveDbFailures >= 3) {
+        console.log("▶️  Supabase antwortet wieder — normale Polling-Taktung.");
+    }
+    consecutiveDbFailures = 0;
+}
+
 async function warmProductCache() {
     console.log("🗂️  Produkt-Cache: Lade Hotel-Settings aus 3RPMS...");
     for (const hotel of HOTELS) {
@@ -388,9 +417,11 @@ async function processOutbound() {
             .eq("status", "approved");
 
         if (error) {
+            reportDbFailure();
             console.error("❌ processOutbound: Laden der genehmigten Mails fehlgeschlagen:", error.message);
             return;
         }
+        reportDbSuccess();
         if (!approvedMails || approvedMails.length === 0) return;
 
         for (const mail of approvedMails) {
@@ -471,6 +502,7 @@ async function processOutbound() {
             }
         }
     } catch (err: any) {
+        reportDbFailure();
         console.error("❌ processOutbound: unerwarteter Fehler:", err?.message || err);
     }
 }
@@ -492,9 +524,11 @@ async function watchNewMails() {
             .limit(5);
 
         if (error) {
+            reportDbFailure();
             console.error("❌ watchNewMails Fehler:", error.message);
             return;
         }
+        reportDbSuccess();
         if (!newMails || newMails.length === 0) return;
 
         for (const mail of newMails) {
@@ -513,6 +547,7 @@ async function watchNewMails() {
             await runAiPipeline(mailData, mail.thread_id);
         }
     } catch (err: any) {
+        reportDbFailure();
         console.error("❌ watchNewMails: unerwarteter Fehler:", err?.message || err);
     }
 }
@@ -754,12 +789,22 @@ async function archiveStaleMails() {
 process.on("uncaughtException", (err) => console.error("Uncaught:", err));
 process.on("unhandledRejection", (reason) => console.error("Unhandled:", reason));
 
-warmProductCache().then(() => {
-    setInterval(processOutbound, 10000);
+// Selbst-planende Schleifen statt setInterval — dadurch kann die Pause zwischen
+// Durchläufen bei wiederholten DB-Fehlern per nextDelay() dynamisch wachsen (s.o.),
+// und ein einzelner langsamer Zyklus überlappt nie mit dem nächsten.
+function scheduleProcessOutbound() {
+    processOutbound().finally(() => setTimeout(scheduleProcessOutbound, nextDelay(10000)));
+}
+function scheduleWatchNewMails() {
     // watchNewMails ist nur noch Sicherheitsnetz (neue Mails triggern die Pipeline direkt im
     // IMAP-Handler) — 1,5s war unnötig aggressiv und hat spürbar zum Supabase-Egress-Verbrauch
     // beigetragen. 5s ist als Wartezeit nach einem Dashboard-Klick immer noch unauffällig kurz.
-    setInterval(watchNewMails, 5000);
+    watchNewMails().finally(() => setTimeout(scheduleWatchNewMails, nextDelay(5000)));
+}
+
+warmProductCache().then(() => {
+    scheduleProcessOutbound();
+    scheduleWatchNewMails();
     setInterval(archiveStaleMails, 6 * 3600 * 1000); // alle 6h
     archiveStaleMails().catch(console.error);
     startListener().catch(console.error);

@@ -425,7 +425,11 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         : null;
 
     // ─── Realtime-ähnliches Polling ─────────────────────────────────────────
-    // Schnelles Polling (8s) wenn aktive Mails vorhanden, sonst 30s
+    // 15s wenn aktive Mails vorhanden, sonst 60s (vorher 8s/45s — jede Mail in der Liste
+    // liefert ihr komplettes agent_logs-JSONB mit, gemessen ~150KB pro Fetch bei ~300
+    // aktiven Mails; bei durchgehend offenem Dashboard war das mit 8s-Takt der mit Abstand
+    // größte einzelne Egress-Treiber, ~66MB/h. Gröberer Takt halbiert das ohne spürbaren
+    // UX-Verlust — die Pipeline selbst braucht ohnehin mehrere Sekunden pro Mail.
 
     const fetchEmails = useCallback(async () => {
         const data = await fetchEmailsAction();
@@ -434,7 +438,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
 
     useEffect(() => {
         const hasActive = emails.some((e) => e.status === "queued" || e.status === "approved");
-        const interval = setInterval(fetchEmails, hasActive ? 8000 : 45000);
+        const interval = setInterval(fetchEmails, hasActive ? 15000 : 60000);
         return () => clearInterval(interval);
     }, [emails, fetchEmails]);
 

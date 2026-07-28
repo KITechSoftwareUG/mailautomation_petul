@@ -1,7 +1,7 @@
 "use server";
 
 import { supabaseAdmin } from "@/utils/supabase/server";
-import { EMAIL_LIST_SELECT, ACTIVE_STATUSES, DONE_STATUSES } from "./constants";
+import { EMAIL_LIST_SELECT, ACTIVE_STATUSES, DONE_STATUSES, DASHBOARD_SHOW_SINCE } from "./constants";
 
 export async function fetchEmails() {
     const [activeResult, doneResult] = await Promise.all([
@@ -9,12 +9,14 @@ export async function fetchEmails() {
             .from("emails")
             .select(EMAIL_LIST_SELECT)
             .in("status", ACTIVE_STATUSES)
+            .gte("received_at", DASHBOARD_SHOW_SINCE)
             .order("received_at", { ascending: false })
             .limit(300),
         supabaseAdmin
             .from("emails")
             .select(EMAIL_LIST_SELECT)
             .in("status", DONE_STATUSES)
+            .gte("received_at", DASHBOARD_SHOW_SINCE)
             .order("received_at", { ascending: false })
             .limit(50),
     ]);

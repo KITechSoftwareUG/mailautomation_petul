@@ -12,9 +12,11 @@ CREATE TABLE IF NOT EXISTS public.hotel_signatures (
 
 ALTER TABLE public.hotel_signatures ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Public read access" ON public.hotel_signatures;
 CREATE POLICY "Public read access" ON public.hotel_signatures
     FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "Public update access" ON public.hotel_signatures;
 CREATE POLICY "Public update access" ON public.hotel_signatures
     FOR UPDATE USING (true) WITH CHECK (true);
 

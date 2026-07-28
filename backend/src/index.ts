@@ -88,6 +88,12 @@ const transporter = nodemailer.createTransport({
     port: 465,
     secure: true,
     auth: { user: imapUser!, pass: imapPassword! },
+    // Ohne diese Grenzen blockiert ein hängender SMTP-Socket processOutbound bis zu
+    // 10 Minuten (Nodemailer-Default) und damit den Versand ALLER anderen
+    // freigegebenen Mails.
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 20000,
 });
 
 // ─── Hotel Product Cache (einmalig beim Start geladen) ────────────────────────
@@ -168,17 +174,42 @@ async function writeResultIfCurrent(mailId: string, expectedQueuedAt: string | n
     return true;
 }
 
+// Begrenzt, wie viele Pipelines gleichzeitig laufen. pipelineInProgress dedupliziert
+// nur dieselbe mail_id — bei 40 gleichzeitig zugestellten Mails starteten bisher 40
+// Pipelines mit je 3 LLM-Calls parallel. Ergebnis: OpenAI-Rate-Limit, alle 40 landen
+// auf "failed". Überzählige Mails bleiben einfach "queued", der Poller zieht sie nach.
+const MAX_CONCURRENT_PIPELINES = 3;
+const MAX_PIPELINE_ATTEMPTS = 3;
+let activePipelines = 0;
+
 async function runAiPipeline(mailData: any, threadId: string | null) {
     if (pipelineInProgress.has(mailData.mail_id)) {
         console.log(`⏭️  Pipeline läuft bereits für ${mailData.mail_id} – überspringe`);
         return;
     }
+    if (activePipelines >= MAX_CONCURRENT_PIPELINES) {
+        console.log(`⏸️  Auslastungsgrenze (${MAX_CONCURRENT_PIPELINES}) erreicht — ${mailData.mail_id} bleibt "queued", Poller holt sie nach.`);
+        return;
+    }
     pipelineInProgress.add(mailData.mail_id);
+    activePipelines++;
     console.log(`🤖 KI Pipeline startet für mail_id: ${mailData.mail_id}`);
 
     // Langen E-Mail-Text kürzen — reduziert Kontext für alle 3 LLM-Calls
     const bodyText = (mailData.body_text || "").slice(0, 3000);
     const queuedAt = mailData.queued_at ?? null;
+
+    // Basis für ALLE agent_logs-Schreibvorgänge dieser Funktion. Ohne diesen Merge
+    // baute die Pipeline agent_logs jedes Mal neu auf und löschte dabei ai_force_hotel
+    // und force_process — die manuelle Hotelwahl und "Trotzdem bearbeiten" überlebten
+    // damit genau einen Durchlauf, danach war die Eingabe der Rezeptionistin weg.
+    const baseLogs = {
+        ...(mailData.agent_logs || {}),
+        ai_force_hotel: mailData.ai_force_hotel || null,
+        force_process: !!mailData.force_process,
+        reply_to: mailData.reply_to || null,
+    };
+
     let intentData: any = null;
     let policyData: any = null;
 
@@ -281,8 +312,31 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                         return { attempted: true, data: null, error: err.message };
                     }
                 }
-                // Kein Code → früh gestarteten E-Mail-Lookup abwarten (meist schon fertig)
-                return await earlyEmailLookup;
+                // Kein Code → früh gestarteten E-Mail-Lookup verwenden. ABER nur, wenn er
+                // gegen dasselbe Hotel lief, das jetzt tatsächlich gilt.
+                //
+                // Der Früh-Lookup startet aus Geschwindigkeitsgründen mit dem Hotel aus
+                // dem Mail-Header, bevor die manuelle Auswahl oder die KI-Erkennung
+                // ausgewertet ist. Korrigierte die Rezeptionistin auf ein anderes Haus,
+                // wurde bisher trotzdem das Ergebnis des Header-Hotels übernommen: der
+                // Entwurf nannte dann Zimmer, Datum und Preis eines fremden Aufenthalts
+                // — im Namen des richtigen Hotels. Zweiter Fall: ergab der Header nichts,
+                // fand NIE ein E-Mail-Lookup statt, obwohl über die manuelle Auswahl ein
+                // gültiger API-Key vorlag.
+                if (hotelEarly?.id === hotel?.id) {
+                    return await earlyEmailLookup;
+                }
+
+                console.log(`   ↻ Hotel gewechselt (${hotelEarly?.name ?? "keins"} → ${resolvedHotel}) — PMS-Lookup wird neu ausgeführt.`);
+                if (!mailData.absender) return { attempted: false, data: null };
+                try {
+                    const r = await searchReservationsByEmail(hotelApiKey, mailData.absender);
+                    if (r) { console.log(`   ✅ Gast per E-Mail gefunden (${resolvedHotel})`); return { attempted: true, data: r }; }
+                    return { attempted: false, data: null };
+                } catch (err: any) {
+                    console.warn(`   ⚠️  E-Mail-Suche Fehler: ${err.message}`);
+                    return { attempted: true, data: null, error: err.message };
+                }
             })(),
 
             // 3RPMS: Verfügbarkeit (bei Reservierungsanfrage oder Umbuchung mit Datum)
@@ -332,6 +386,7 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 draft_reply: null,
                 api_action: null,
                 agent_logs: {
+                    ...baseLogs,
                     intentData,
                     policyData,
                     pipeline_errors: [errorMsg],
@@ -360,6 +415,14 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         );
         console.log(`   → Geplante Aktion: ${finalActionData.api_action}`);
 
+        // Signatur wird HIER angehängt, nicht erst beim Versand. Vorher gab die
+        // Rezeptionistin draft_reply frei, gesendet wurde aber draft_reply + Signatur —
+        // sie hat also nie gesehen, was tatsächlich das Haus verlässt (inklusive der
+        // Platzhalter-Adressen, die produktiv in hotel_signatures standen).
+        // Jetzt steht der vollständige Text im editierbaren Entwurf.
+        const signature = await getSignature(supabase, hotel?.id ?? null);
+        const draftWithSignature = `${finalActionData.antwort_entwurf}${signature}`;
+
         // 6. DB Update — determineAction wirft bei Fehlern (s. catch unten), liefert sonst immer einen Entwurf
         const wrote = await writeResultIfCurrent(mailData.mail_id, queuedAt, {
             status: "processing",
@@ -367,8 +430,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             policy_decision_allowed: policyData.policy_passed,
             policy_decision_reason: policyData.policy_decision_reason,
             api_action: finalActionData.api_action,
-            draft_reply: finalActionData.antwort_entwurf,
+            draft_reply: draftWithSignature,
             agent_logs: {
+                ...baseLogs,
                 intentData,
                 policyData,
                 actionData: finalActionData,
@@ -386,13 +450,33 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
 
     } catch (err: any) {
         console.error(`❌ Pipeline Fehler (${mailData.mail_id}):`, err.stack || err.message || err);
+
+        // Transiente Fehler (Netz, Timeout, Rate-Limit, 5xx) sind nicht die Schuld der
+        // Mail — sie gehören zurück in die Warteschlange. Nur fachliche Fehler landen
+        // auf "failed". Vorher parkte ein 20-minütiger 3RPMS-Ausfall jede in dieser Zeit
+        // eintreffende Mail dauerhaft auf "failed", wo sie nie wieder jemand anfasste.
+        const msg = String(err?.message || err);
+        const transient = /timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|fetch failed|rate limit|429|50[0-9]|aborted/i.test(msg);
+        const attempts = Number(mailData.pipeline_attempts || 0) + 1;
+
+        if (transient && attempts < MAX_PIPELINE_ATTEMPTS) {
+            console.warn(`   ↻ Transienter Fehler (Versuch ${attempts}/${MAX_PIPELINE_ATTEMPTS}) — Mail bleibt "queued" für erneuten Versuch.`);
+            await writeResultIfCurrent(mailData.mail_id, queuedAt, {
+                status: "queued",
+                agent_logs: { ...baseLogs, pipeline_attempts: attempts, last_error: msg, queued_at: queuedAt } as any,
+            });
+            return;
+        }
+
         await writeResultIfCurrent(mailData.mail_id, queuedAt, {
             status: "failed",
             intent: intentData?.kategorie ?? null,
             agent_logs: {
+                ...baseLogs,
                 intentData,
                 policyData,
-                pipeline_errors: [`Unerwarteter Fehler: ${err.message || String(err)}`],
+                pipeline_attempts: attempts,
+                pipeline_errors: [`Unerwarteter Fehler: ${msg}`],
                 forward_target: mailData.forward_target || null,
                 empfaenger: mailData.empfaenger || null,
                 queued_at: queuedAt,
@@ -400,21 +484,48 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         });
     } finally {
         pipelineInProgress.delete(mailData.mail_id);
+        activePipelines--;
     }
 }
 
 // ─── Outbound: Mutation ausführen + E-Mail senden (nach menschlicher Freigabe) ─
 
+// Löst das Zielhotel aus agent_logs auf — mit derselben Prioritätskette wie die
+// Pipeline. Die manuelle Auswahl der Rezeptionistin hat absoluten Vorrang.
+//
+// Bisher rief der Sendepfad direkt identifyHotel(empfaenger, forwardTarget, …) auf und
+// las ai_force_hotel NIE. Der in der Doku beschriebene "absolute Vorrang" der manuellen
+// Auswahl galt damit ausschließlich für den Entwurfstext: Korrigierte die Rezeptionistin
+// das Hotel, wurde die Mail zwar für Haus B formuliert, aber mit dem API-Key von Haus A
+// ins PMS geschrieben und mit der Signatur (Anschrift, Telefonnummer) von Haus A versendet.
+function resolveHotel(agentLogs: any) {
+    const forced = agentLogs?.ai_force_hotel
+        ? HOTELS.find(h => h.name === agentLogs.ai_force_hotel) || null
+        : null;
+    if (forced) return forced;
+    return identifyHotel(
+        agentLogs?.empfaenger || "",
+        agentLogs?.forward_target || "",
+        agentLogs?.target_hotel || null
+    );
+}
+
+const MAX_SEND_ATTEMPTS = 5;
+
 async function processOutbound() {
     try {
         // WICHTIG: empfaenger/forward_target sind KEINE Spalten der emails-Tabelle,
         // sie liegen nur in agent_logs (JSONB). Ein Query mit diesen Spaltennamen
-        // schlägt serverseitig fehl (400) und wurde bisher hier still verschluckt —
-        // dadurch wurde nie eine genehmigte Mail tatsächlich versendet.
+        // schlägt serverseitig fehl (400).
+        // .limit(10): agent_logs enthält threeRpmsData + inventoryData und ist pro Zeile
+        // realistisch 30–100 KB groß. Ein ungedeckelter Select alle 10 s über eine
+        // stauende approved-Queue war der Rückkopplungseffekt, der den Egress
+        // hochgetrieben hat: Sendefehler → Stau → mehr Egress → DB-Sperre → nichts geht.
         const { data: approvedMails, error } = await supabase
             .from("emails")
             .select("id, mail_id, betreff, draft_reply, agent_logs, senders!inner(email)")
-            .eq("status", "approved");
+            .eq("status", "approved")
+            .limit(10);
 
         if (error) {
             reportDbFailure();
@@ -425,24 +536,49 @@ async function processOutbound() {
         if (!approvedMails || approvedMails.length === 0) return;
 
         for (const mail of approvedMails) {
+            const logs = (mail.agent_logs as any) || {};
+            const attempts = Number(logs.send_attempts || 0);
+
+            // Dead-Letter: nach MAX_SEND_ATTEMPTS aus der Schleife nehmen. Ohne diese
+            // Grenze lief eine dauerhaft unzustellbare Mail alle 10 s erneut durch —
+            // 8.640 Versuche pro Tag, jeder davon früher inklusive PMS-Mutation.
+            if (attempts >= MAX_SEND_ATTEMPTS) {
+                console.error(`⛔ ${mail.mail_id}: ${attempts} Sendeversuche gescheitert — als send_failed markiert.`);
+                await supabase.from("emails")
+                    .update({ status: "send_failed", agent_logs: { ...logs, send_failed_at: new Date().toISOString() } })
+                    .eq("id", mail.id).eq("status", "approved");
+                continue;
+            }
+
             try {
-                const recipientEmail = (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email;
+                // Reply-To hat Vorrang vor der Absenderadresse. Bei Portal-Mails
+                // (Booking.com, Airbnb) ist From: noreply@… — eine Antwort dorthin
+                // erreicht den Gast nie, wurde aber als erfolgreich versendet verbucht.
+                const senderEmail = (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email;
+                const recipientEmail = logs.reply_to || senderEmail;
+
                 if (!recipientEmail) {
-                    console.error(`❌ Sende-Fehler (${mail.mail_id}): kein Absender-E-Mail hinterlegt — als failed markiert`);
+                    console.error(`❌ Sende-Fehler (${mail.mail_id}): keine Empfängeradresse — als failed markiert`);
                     await supabase.from("emails").update({ status: "failed" }).eq("id", mail.id).eq("status", "approved");
                     continue;
                 }
 
-                // Atomar als "sent" beanspruchen, BEVOR tatsächlich gesendet wird — der
-                // WHERE-status=approved-Guard sorgt dafür, dass nur ein Zyklus gewinnt,
-                // falls processOutbound sich je überlappt. Schlägt das Senden danach doch
-                // fehl, wird unten zurück auf "approved" gesetzt (Retry beim nächsten Zyklus).
+                // Atomar beanspruchen. Zwischenstatus "sending" statt direkt "sent":
+                // ein Prozessabbruch zwischen Claim und Versand hinterließ bisher eine
+                // Mail im Status "sent", die nie gesendet wurde — processOutbound sucht
+                // nur nach "approved" und hat sie deshalb nie wieder angefasst.
+                // "sending" ist als hängengebliebener Zustand erkennbar und wird von
+                // recoverStuckSending() zurückgeholt.
                 const { data: claimed, error: claimError } = await supabase
                     .from("emails")
-                    .update({ status: "sent" })
+                    .update({
+                        status: "sending",
+                        agent_logs: { ...logs, send_attempts: attempts + 1, sending_started_at: new Date().toISOString() },
+                    })
                     .eq("id", mail.id)
                     .eq("status", "approved")
                     .select("id");
+
                 if (claimError) {
                     console.error(`❌ processOutbound: Claim fehlgeschlagen (${mail.mail_id}):`, claimError.message);
                     continue;
@@ -452,17 +588,44 @@ async function processOutbound() {
                     continue;
                 }
 
-                const empfaenger = (mail.agent_logs as any)?.empfaenger || "";
-                const forwardTarget = (mail.agent_logs as any)?.forward_target || "";
+                const hotel = resolveHotel(logs);
 
-                // Geplante 3RPMS-Mutation ausführen
-                const actionData = (mail.agent_logs as any)?.actionData;
+                // ─── Schritt 1: E-Mail senden ───────────────────────────────────────
+                // Der Versand kommt VOR der Mutation. Vorher war es umgekehrt, und weil
+                // der Fehlerpfad auf "approved" zurücksetzte, wurde bei jedem Sendefehler
+                // die PMS-Mutation erneut ausgeführt — bookExtraService erzeugt per
+                // REC-${Date.now()} jedes Mal einen neuen Beleg auf der Gastrechnung.
+                const subject = /^re:/i.test((mail as any).betreff || "")
+                    ? (mail as any).betreff
+                    : `Re: ${(mail as any).betreff}`;
+
+                const headers: Record<string, string> = {};
+                if (mail.mail_id && !mail.mail_id.startsWith("fallback_")) {
+                    // Ohne In-Reply-To/References hängt die Antwort im Postfach des Gastes
+                    // als neue, kontextlose Mail — er sieht seinen eigenen Verlauf nicht.
+                    headers["In-Reply-To"] = `<${mail.mail_id}>`;
+                    headers["References"] = `<${mail.mail_id}>`;
+                }
+
+                await transporter.sendMail({
+                    from: `"${hotel?.name || "Petul Hotels"}" <${process.env.IMAP_USER}>`,
+                    to: recipientEmail,
+                    subject,
+                    text: (mail as any).draft_reply,
+                    headers,
+                });
+
+                // Ab hier ist der Versand eine Tatsache. mail_sent_at verhindert, dass
+                // ein späterer Fehler die Mail erneut in die Sendeschleife schickt.
+                const sentAt = new Date().toISOString();
+                console.log(`✅ Outbound gesendet: ${mail.mail_id} → ${recipientEmail}`);
+
+                // ─── Schritt 2: PMS-Mutation, genau einmal ──────────────────────────
+                const actionData = logs.actionData;
+                let mutationFailed = false;
+                let mutationError: string | null = null;
+
                 if (actionData?.graphql_mutation && actionData.graphql_mutation !== "none") {
-                    const hotel = identifyHotel(
-                        empfaenger,
-                        forwardTarget,
-                        (mail.agent_logs as any)?.target_hotel || null
-                    );
                     if (hotel?.key) {
                         try {
                             const variables = typeof actionData.graphql_variables === "string"
@@ -471,39 +634,84 @@ async function processOutbound() {
                             await query3RPMS(hotel.key, actionData.graphql_mutation, variables);
                             console.log(`✅ 3RPMS Mutation ausgeführt: ${mail.mail_id} (${actionData.api_action})`);
                         } catch (mutErr: any) {
-                            // Mutation fehlgeschlagen – E-Mail trotzdem senden (Mensch hat genehmigt)
-                            console.error(`⚠️  Mutation Fehler (${mail.mail_id}): ${mutErr.message} — E-Mail wird trotzdem gesendet`);
+                            // Die Mail ist raus und hat die Änderung womöglich zugesagt.
+                            // Das MUSS im Dashboard sichtbar werden — bisher zeigte es
+                            // schlicht grün "Ausgeführt", weil es nur auf status==="sent" sah.
+                            mutationFailed = true;
+                            mutationError = mutErr?.message || String(mutErr);
+                            console.error(`⚠️  Mutation FEHLGESCHLAGEN (${mail.mail_id}): ${mutationError} — Mail ist bereits raus, Nacharbeit nötig!`);
                         }
+                    } else {
+                        mutationFailed = true;
+                        mutationError = "Kein Hotel-API-Key auflösbar";
+                        console.error(`⚠️  Mutation übersprungen (${mail.mail_id}): kein API-Key für Hotel`);
                     }
                 }
 
-                // E-Mail senden
-                const hotelId = identifyHotel(
-                    empfaenger,
-                    forwardTarget,
-                    (mail.agent_logs as any)?.target_hotel || null
-                )?.id ?? null;
-                const signature = await getSignature(supabase, hotelId);
-                const bodyWithSignature = `${(mail as any).draft_reply}${signature}`;
+                await supabase.from("emails").update({
+                    status: "sent",
+                    agent_logs: {
+                        ...logs,
+                        send_attempts: attempts + 1,
+                        mail_sent_at: sentAt,
+                        sent_to: recipientEmail,
+                        sent_hotel: hotel?.name || null,
+                        mutation_failed: mutationFailed,
+                        mutation_error: mutationError,
+                    },
+                }).eq("id", mail.id);
 
-                await transporter.sendMail({
-                    from: `"Petulia AI Agent" <${process.env.IMAP_USER}>`,
-                    to: recipientEmail,
-                    subject: `Re: ${(mail as any).betreff}`,
-                    text: bodyWithSignature,
-                });
-
-                console.log(`✅ Outbound gesendet: ${mail.mail_id}`);
             } catch (err: any) {
-                console.error(`❌ Sende-Fehler (${mail.mail_id}) — auf "approved" zurückgesetzt für Retry:`, err.message);
-                // War bereits als "sent" beansprucht, das Senden ist aber gescheitert —
-                // zurücksetzen, damit der nächste Zyklus es erneut versucht.
-                await supabase.from("emails").update({ status: "approved" }).eq("id", mail.id).eq("status", "sent");
+                console.error(`❌ Sende-Fehler (${mail.mail_id}), Versuch ${attempts + 1}/${MAX_SEND_ATTEMPTS}:`, err.message);
+                // Der Rückgabewert wird jetzt geprüft. Scheiterte dieser Reset früher
+                // still, blieb die Mail für immer auf "sent", ohne je gesendet worden zu sein.
+                const { error: resetError } = await supabase
+                    .from("emails")
+                    .update({ status: "approved" })
+                    .eq("id", mail.id)
+                    .eq("status", "sending");
+                if (resetError) {
+                    console.error(`❌ KRITISCH: Reset auf "approved" fehlgeschlagen (${mail.mail_id}): ${resetError.message} — Mail hängt in "sending"!`);
+                }
             }
         }
     } catch (err: any) {
         reportDbFailure();
         console.error("❌ processOutbound: unerwarteter Fehler:", err?.message || err);
+    }
+}
+
+// Holt Mails zurück, die im Zwischenstatus "sending" hängen geblieben sind — etwa
+// weil der Prozess zwischen Claim und Versand neu gestartet wurde. Ohne diese
+// Selbstheilung wäre "sending" eine neue Sackgasse.
+async function recoverStuckSending() {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+        .from("emails")
+        .select("id, mail_id, agent_logs")
+        .eq("status", "sending")
+        .limit(50);
+
+    if (error || !data || data.length === 0) return;
+
+    const stuck = data.filter((row: any) => {
+        const startedAt = row.agent_logs?.sending_started_at;
+        // mail_sent_at gesetzt = der Versand war erfolgreich, nur das Status-Update
+        // danach ist gescheitert. Diese Mail darf NICHT erneut gesendet werden.
+        if (row.agent_logs?.mail_sent_at) return false;
+        return !startedAt || startedAt < cutoff;
+    });
+
+    for (const row of stuck) {
+        console.warn(`🔧 ${row.mail_id}: hing in "sending" — zurück auf "approved" für erneuten Versuch.`);
+        await supabase.from("emails").update({ status: "approved" }).eq("id", row.id).eq("status", "sending");
+    }
+
+    // Versand erfolgreich, nur das Status-Update scheiterte → direkt auf "sent".
+    const alreadySent = data.filter((row: any) => row.agent_logs?.mail_sent_at);
+    for (const row of alreadySent) {
+        console.warn(`🔧 ${row.mail_id}: war bereits versendet — korrigiere Status auf "sent".`);
+        await supabase.from("emails").update({ status: "sent" }).eq("id", row.id).eq("status", "sending");
     }
 }
 
@@ -532,17 +740,38 @@ async function watchNewMails() {
         if (!newMails || newMails.length === 0) return;
 
         for (const mail of newMails) {
+            const logs = (mail.agent_logs as any) || {};
+            const attempts = Number(logs.pipeline_attempts || 0);
+
+            // Ohne diese Grenze lief eine Mail, deren Ergebnis nicht geschrieben werden
+            // konnte, alle 5 Sekunden komplett neu durch die Pipeline: 720 Durchläufe
+            // pro Stunde à 3 LLM-Calls für eine einzige Mail. Der DB-Backoff greift hier
+            // nicht, weil der SELECT ja erfolgreich ist — nur das Schreiben scheitert.
+            if (attempts >= MAX_PIPELINE_ATTEMPTS) {
+                console.error(`⛔ ${mail.mail_id}: ${attempts} Pipeline-Versuche ohne Ergebnis — als failed markiert.`);
+                await supabase.from("emails").update({
+                    status: "failed",
+                    agent_logs: { ...logs, pipeline_errors: [`Nach ${attempts} Versuchen kein Ergebnis speicherbar`] },
+                }).eq("mail_id", mail.mail_id).eq("status", "queued");
+                continue;
+            }
+
             console.log(`🔄 Watcher: Pipeline-Trigger für ${mail.mail_id}`);
             const mailData = {
                 mail_id: mail.mail_id,
                 betreff: mail.betreff,
                 body_text: mail.body_text,
                 absender: (mail.senders as any)?.[0]?.email || (mail.senders as any)?.email || "system",
-                empfaenger: (mail.agent_logs as any)?.empfaenger || "",
-                forward_target: (mail.agent_logs as any)?.forward_target || "",
-                force_process: !!(mail.agent_logs as any)?.force_process,
-                queued_at: (mail.agent_logs as any)?.queued_at || null,
-                ai_force_hotel: (mail.agent_logs as any)?.ai_force_hotel || null,
+                empfaenger: logs.empfaenger || "",
+                forward_target: logs.forward_target || "",
+                reply_to: logs.reply_to || null,
+                force_process: !!logs.force_process,
+                queued_at: logs.queued_at || null,
+                ai_force_hotel: logs.ai_force_hotel || null,
+                // Der komplette bisherige Stand wird durchgereicht, damit die Pipeline
+                // ihn beim Schreiben mergen kann statt ihn zu überschreiben.
+                agent_logs: logs,
+                pipeline_attempts: attempts,
             };
             await runAiPipeline(mailData, mail.thread_id);
         }
@@ -561,6 +790,29 @@ async function watchNewMails() {
 async function sendFallbackAcknowledgement(mailData: any) {
     const hotel = identifyHotel(mailData.empfaenger, mailData.forward_target, null);
     const hotelName = hotel?.name || "Petul Hotels";
+
+    // Schleifenschutz. Ohne ihn antwortet der Bot auf fremde Autoresponder, Newsletter
+    // und Bounces — und zwar so lange, wie die Datenbank ausfällt. Zwei Auto-Responder,
+    // die sich gegenseitig antworten, erzeugen eine Mailschleife, die erst endet, wenn
+    // jemand den Prozess stoppt (oder der Provider die Absenderadresse sperrt).
+    const headers = mailData.raw_headers || new Map();
+    const autoSubmitted = String(headers.get?.("auto-submitted") || "");
+    const precedence = String(headers.get?.("precedence") || "");
+    const isBulk = autoSubmitted.toLowerCase().includes("auto")
+        || ["bulk", "list", "junk"].includes(precedence.toLowerCase())
+        || headers.get?.("list-id") != null
+        || headers.get?.("list-unsubscribe") != null;
+
+    if (isBulk) {
+        console.log("   ⏭️  Fallback: automatische Massenmail (Auto-Submitted/List-Id) — keine Antwort.");
+        return;
+    }
+
+    // Antwort an die eigene Adresse wäre eine garantierte Endlosschleife.
+    if (!mailData.absender || mailData.absender.toLowerCase() === String(process.env.IMAP_USER).toLowerCase()) {
+        console.log("   ⏭️  Fallback: Absender ist das eigene Postfach — keine Antwort.");
+        return;
+    }
 
     // Grobe Spam/Portal/System-Filterung per KI (kein DB-Zugriff nötig) — verhindert, dass
     // Newsletter/Systembenachrichtigungen automatisch eine "Danke für Ihre Anfrage" bekommen.
@@ -605,8 +857,253 @@ Ihr Team von ${hotelName}`;
 }
 
 // ─── IMAP Listener ────────────────────────────────────────────────────────────
+// Verarbeitungsmodell: der UNSEEN-Bestand des Postfachs ist die einzige Quelle der
+// Wahrheit. Das "exists"-Event ist nur noch ein TRIGGER, der einen Scan anstößt —
+// es wird nicht mehr die Nachricht mit der gemeldeten Sequenznummer direkt gefetcht.
+//
+// Warum dieser Umbau nötig war — drei in den Produktionslogs belegte Fehler des
+// alten Modells, die alle drei durch denselben Mechanismus verschwinden:
+//
+//  1. client.fetch() lief AUSSERHALB des Mailbox-Locks (der wurde direkt nach der
+//     Handler-Registrierung im finally wieder freigegeben). ImapFlow armiert IDLE
+//     nach einer Operation ohne Lock nicht neu → exakt 5:00 Min später Socket-Timeout.
+//     12 von 12 Mal im Log reproduziert: jede eingehende Mail zog genau fünf Minuten
+//     später "Verbindung verloren" nach sich, während IDLE ohne Mailverkehr
+//     stundenlang stabil hielt (20.07., 17:18 → 20:25 ohne einen einzigen Abbruch).
+//     Ergebnis: nach JEDER Mail war der Empfang bis zu 5 Min + 10 s Reconnect blind.
+//
+//  2. Gefetcht wurde ausschließlich data.count — also die EINE höchste Sequenznummer.
+//     Kamen zwei Mails im selben IDLE-Push, war die niedrigere unwiederbringlich weg.
+//     Belegt: Index 752 → 753 → 755. Nachricht 754 hat nie jemand gesehen.
+//
+//  3. Es gab keinen Scan beim Verbindungsaufbau. Alles, was während eines PM2-Neustarts
+//     oder in einer Reconnect-Lücke ankam, wurde nie abgeholt — inklusive der sieben
+//     Tage vom 21.–28.07., in denen der Listener nach einem gescheiterten Reconnect
+//     komplett tot war, während PM2 durchgehend "online" meldete.
+//
+// Ein UNSEEN-Scan innerhalb des Locks löst alle drei Punkte zugleich und macht den
+// Empfang zusätzlich idempotent: was aus irgendeinem Grund nicht verarbeitet wurde,
+// bleibt ungelesen und wird beim nächsten Scan erneut angefasst.
 
-async function startListener() {
+// Mails, die älter als dieser Stichtag sind, werden NICHT mehr verarbeitet, sondern
+// nur als gelesen markiert. Ohne diese Grenze würde der neue UNSEEN-Scan beim ersten
+// Start den kompletten historischen Altbestand des Postfachs einlesen und durch die
+// KI-Pipeline jagen — genau den Rückstau, der bewusst aus der Datenbank entfernt wurde.
+const PROCESS_MAILS_SINCE = new Date(process.env.PROCESS_MAILS_SINCE ?? "2026-07-28T00:00:00Z");
+
+let imapClient: ImapFlow | null = null;
+let draining = false;
+let reconnecting = false;
+let lastImapActivity = Date.now();
+
+async function handleMessage(source: Buffer) {
+    const parsed = await simpleParser(source);
+    const p = parsed as any;
+    let mail_id = getMessageId(p);
+    if (!mail_id) mail_id = `fallback_${Date.now()}`;
+
+    const rawHeaders = p.headers || new Map();
+    const absender = extractEmails(p.from)[0] || "";
+    const to_list = extractEmails(p.to);
+    const forwardHeader = (
+        rawHeaders.get("x-forwarded-to") ||
+        rawHeaders.get("delivered-to") ||
+        rawHeaders.get("x-original-to") ||
+        ""
+    );
+    const forwardTarget = typeof forwardHeader === "string"
+        ? forwardHeader
+        : (Array.isArray(forwardHeader) ? forwardHeader[0] : "");
+
+    // Reply-To ist bei allem, was über Portale (Booking.com, Airbnb) oder
+    // Weiterleitungen kommt, die EINZIGE Adresse, die den Gast tatsächlich erreicht.
+    // From: ist dort noreply@… — eine Antwort dorthin verpufft folgenlos, wird aber
+    // als "sent" verbucht. Deshalb wird der Header ab hier mitgeführt.
+    const replyTo = extractEmails(p.replyTo)[0] || null;
+
+    // Bei multipart/mixed mit reinem text/html-Part (HTML-Mail mit Anhang — viele
+    // Portal-, Formular- und Kanzlei-Mailer) bleibt parsed.text leer. Die Agenten
+    // bekamen dann nur Betreff und Absender, während das Dashboard den vollen
+    // HTML-Text rendert: die Rezeptionistin liest eine komplette Anfrage und nimmt an,
+    // die KI habe dasselbe gesehen. Tatsächlich hat sie auf ein leeres Feld geantwortet.
+    let bodyText = p.text || "";
+    if (!bodyText.trim() && p.html) {
+        bodyText = String(p.html)
+            .replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<br\s*\/?>/gi, "\n")
+            .replace(/<\/(p|div|tr|h[1-6]|li)>/gi, "\n")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/&amp;/gi, "&")
+            .replace(/&lt;/gi, "<")
+            .replace(/&gt;/gi, ">")
+            .replace(/&quot;/gi, '"')
+            .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(Number(d)))
+            .replace(/[ \t]+/g, " ")
+            .replace(/\n\s*\n\s*\n+/g, "\n\n")
+            .trim();
+        if (bodyText) console.log(`   ℹ️  HTML-only Mail — Text aus HTML extrahiert (${bodyText.length} Zeichen).`);
+    }
+
+    const mailData = {
+        mail_id,
+        betreff: p.subject || "",
+        body_text: bodyText,
+        body_html: p.html || p.textAsHtml || "",
+        absender,
+        empfaenger: to_list.join(", "),
+        forward_target: forwardTarget,
+        reply_to: replyTo,
+        raw_headers: rawHeaders,
+        received_at: p.date?.toISOString() || new Date().toISOString(),
+        in_reply_to: cleanId(p.inReplyTo),
+        has_attachments: Array.isArray(p.attachments) && p.attachments.length > 0,
+    };
+
+    const { data: dbResult, error: dbError } = await supabase.rpc("process_incoming_email", {
+        p_mail_id: mailData.mail_id,
+        p_betreff: mailData.betreff,
+        p_body_text: mailData.body_text,
+        p_body_html: mailData.body_html || "",
+        p_absender: mailData.absender,
+        p_received_at: mailData.received_at,
+        p_in_reply_to: mailData.in_reply_to,
+        p_reference_last: null,
+        p_has_attachments: mailData.has_attachments,
+        p_attachment_count: Array.isArray(p.attachments) ? p.attachments.length : 0,
+    });
+
+    if (dbError) {
+        console.error("❌ RPC Fehler:", dbError.message);
+        reportDbFailure();
+        await sendFallbackAcknowledgement(mailData);
+        // Bewusst KEIN \Seen: die Mail ist nirgends gespeichert. Bliebe sie als gelesen
+        // zurück, wäre sie unwiederbringlich verloren — der Gast hätte eine
+        // "wir melden uns"-Zusage bekommen, die niemand je einlösen kann. Ungelesen
+        // holt der nächste Scan sie zurück, sobald die DB wieder antwortet.
+        return { processed: false, keepUnseen: true };
+    }
+    reportDbSuccess();
+
+    if (dbResult?.status === "success") {
+        const { data: storedMail } = await supabase
+            .from("emails")
+            .select("thread_id")
+            .eq("mail_id", mailData.mail_id)
+            .maybeSingle();
+
+        const queuedAt = new Date().toISOString();
+
+        // Der Rückgabewert wird geprüft: schlägt dieses Update fehl, bleibt die Mail auf
+        // "new" — und für "new" gibt es keinen Poller. Früher startete die Pipeline
+        // trotzdem, fand beim Schreiben kein passendes queued_at und verwarf ihr eigenes
+        // Ergebnis. Drei LLM-Calls bezahlt, Mail unsichtbar liegen geblieben.
+        const { error: queueError } = await supabase.from("emails").update({
+            status: "queued",
+            agent_logs: {
+                empfaenger: mailData.empfaenger,
+                forward_target: mailData.forward_target,
+                reply_to: mailData.reply_to,
+                queued_at: queuedAt,
+            },
+        }).eq("mail_id", mailData.mail_id);
+
+        if (queueError) {
+            console.error(`❌ Queue-Update fehlgeschlagen (${mailData.mail_id}): ${queueError.message} — Mail bleibt ungelesen für den nächsten Scan`);
+            return { processed: false, keepUnseen: true };
+        }
+
+        console.log(`   ✅ Mail gespeichert — Pipeline startet sofort`);
+
+        runAiPipeline({
+            mail_id: mailData.mail_id,
+            betreff: mailData.betreff,
+            body_text: mailData.body_text,
+            absender: mailData.absender,
+            empfaenger: mailData.empfaenger,
+            forward_target: mailData.forward_target,
+            reply_to: mailData.reply_to,
+            force_process: false,
+            queued_at: queuedAt,
+        }, storedMail?.thread_id || null).catch(console.error);
+    }
+
+    return { processed: true, keepUnseen: false };
+}
+
+// Arbeitet den kompletten ungelesenen Bestand ab. Wird bei jedem Connect, bei jedem
+// "exists"-Event und zusätzlich alle 2 Minuten als Sicherheitsnetz aufgerufen.
+async function drainInbox(client: ImapFlow) {
+    if (draining) return;
+    draining = true;
+
+    // Der Lock umschließt die GESAMTE Arbeit — das ist der eigentliche Fix für den
+    // 5-Minuten-Blindzyklus. Erst nach release() armiert ImapFlow IDLE wieder.
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+        // Altbestand: einmal als gelesen markieren, nie verarbeiten. Sonst zieht der
+        // erste Scan nach dem Deployment den gesamten historischen Rückstau ein.
+        const staleUids = await client.search(
+            { seen: false, before: PROCESS_MAILS_SINCE },
+            { uid: true }
+        );
+        if (staleUids && staleUids.length > 0) {
+            await client.messageFlagsAdd(staleUids.join(","), ["\\Seen"], { uid: true });
+            console.log(`🗄️  ${staleUids.length} Mail(s) vor ${PROCESS_MAILS_SINCE.toISOString().slice(0, 10)} als gelesen markiert (nicht verarbeitet).`);
+        }
+
+        const uids = await client.search(
+            { seen: false, since: PROCESS_MAILS_SINCE },
+            { uid: true }
+        );
+        if (!uids || uids.length === 0) return;
+
+        console.log(`\n✨ ${uids.length} ungelesene Mail(s) im Postfach — verarbeite...`);
+
+        for (const uid of uids) {
+            try {
+                const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+                if (!msg || !msg.source) {
+                    console.warn(`   ⚠️  UID ${uid}: kein Inhalt abrufbar — übersprungen`);
+                    continue;
+                }
+                const result = await handleMessage(msg.source as Buffer);
+                lastImapActivity = Date.now();
+
+                // \Seen ausschließlich nach erfolgreicher Speicherung. Alles andere
+                // bleibt ungelesen und wird beim nächsten Durchlauf erneut versucht.
+                if (!result.keepUnseen) {
+                    await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
+                }
+            } catch (err: any) {
+                console.error(`❌ Fehler bei UID ${uid}: ${err?.message || err} — bleibt ungelesen`);
+            }
+        }
+    } finally {
+        lock.release();
+        draining = false;
+    }
+}
+
+function scheduleReconnect(attempt = 0) {
+    if (reconnecting) return;
+    reconnecting = true;
+    const delay = Math.min(10000 * Math.pow(2, attempt), 300000);
+    console.log(`⚠️  Verbindung verloren. Reconnect-Versuch ${attempt + 1} in ${Math.round(delay / 1000)}s...`);
+    setTimeout(() => {
+        reconnecting = false;
+        // Ohne dieses .catch() endete der Prozess nach einem einzigen gescheiterten
+        // connect() in einer unbehandelten Rejection — und versuchte es NIE wieder.
+        // Genau so entstand der siebentägige Totalausfall vom 21.07.
+        startListener(attempt + 1).catch((err: any) => {
+            console.error(`❌ Reconnect fehlgeschlagen: ${err?.message || err}`);
+            scheduleReconnect(attempt + 1);
+        });
+    }, delay);
+}
+
+async function startListener(attempt = 0) {
     const client = new ImapFlow({
         host: imapHost!,
         port: Number(process.env.IMAP_PORT ?? 993),
@@ -615,124 +1112,63 @@ async function startListener() {
         logger: false,
     });
 
+    // Beide Handler MÜSSEN vor connect() registriert werden. Standen sie danach
+    // (wie bisher), wurde bei einem Fehler in connect() nie ein close-Handler
+    // verdrahtet — der Reconnect-Pfad existierte dann schlicht nicht mehr.
+    client.on("close", () => {
+        imapClient = null;
+        scheduleReconnect(0);
+    });
+    client.on("error", (err: any) => {
+        // Ohne diesen Listener wirft ein EventEmitter-'error' eine uncaughtException.
+        console.error(`⚠️  IMAP-Fehler: ${err?.message || err}`);
+    });
+    client.on("exists", () => {
+        drainInbox(client).catch((err: any) =>
+            console.error("❌ drainInbox (exists) Fehler:", err?.message || err)
+        );
+    });
+
     console.log("📨 Petul: Verbinde zum Mailserver...");
     await client.connect();
+    await client.mailboxOpen("INBOX");
 
-    const mailbox = await client.getMailboxLock("INBOX");
+    imapClient = client;
+    lastImapActivity = Date.now();
+    console.log("✅ Petul: Verbunden & IDLE aktiv. Warte auf Mails...");
 
-    try {
-        console.log("✅ Petul: Verbunden & IDLE aktiv. Warte auf Mails...");
+    // Nachhol-Scan bei jedem Verbindungsaufbau: fängt alles ein, was während eines
+    // Neustarts oder einer Reconnect-Lücke eingetroffen ist.
+    await drainInbox(client);
+}
 
-        client.on("exists", async (data) => {
-            console.log(`\n✨ Neue Mail im Postfach erkannt (Index: ${data.count})`);
+// ─── Watchdog: erkennt den stillen Empfangstod ───────────────────────────────
+// Letzte Verteidigungslinie. Der siebentägige Ausfall im Juli blieb unbemerkt, weil
+// PM2 "online" meldete und die Poller weiterliefen — nur der Mailempfang war tot.
+// Hier wird aktiv geprüft, ob der Listener überhaupt noch etwas tut.
 
-            const messages = await client.fetch(data.count.toString(), {
-                envelope: true,
-                source: true,
-                flags: true,
-            });
+const IMAP_STALE_MS = 15 * 60 * 1000;
+const IMAP_DEAD_MS = 30 * 60 * 1000;
 
-            for await (const msg of messages) {
-                if (msg.flags && msg.flags.has("\\\\Seen")) continue;
+async function imapWatchdog() {
+    const idleFor = Date.now() - lastImapActivity;
 
-                const parsed = await simpleParser(msg.source as Buffer);
-                const p = parsed as any;
-                let mail_id = getMessageId(p);
-                if (!mail_id) mail_id = `fallback_${Date.now()}`;
-
-                const rawHeaders = p.headers || new Map();
-                const absender = extractEmails(p.from)[0] || "";
-                const to_list = extractEmails(p.to);
-                const forwardHeader = (
-                    rawHeaders.get("x-forwarded-to") ||
-                    rawHeaders.get("delivered-to") ||
-                    rawHeaders.get("x-original-to") ||
-                    ""
-                );
-                const forwardTarget = typeof forwardHeader === "string"
-                    ? forwardHeader
-                    : (Array.isArray(forwardHeader) ? forwardHeader[0] : "");
-
-                const mailData = {
-                    mail_id,
-                    betreff: p.subject || "",
-                    body_text: p.text || "",
-                    body_html: p.html || p.textAsHtml || "",
-                    absender,
-                    empfaenger: to_list.join(", "),
-                    forward_target: forwardTarget,
-                    received_at: p.date?.toISOString() || new Date().toISOString(),
-                    in_reply_to: cleanId(p.inReplyTo),
-                    has_attachments: Array.isArray(p.attachments) && p.attachments.length > 0,
-                };
-
-                const { data: dbResult, error: dbError } = await supabase.rpc("process_incoming_email", {
-                    p_mail_id: mailData.mail_id,
-                    p_betreff: mailData.betreff,
-                    p_body_text: mailData.body_text,
-                    p_body_html: mailData.body_html || "",
-                    p_absender: mailData.absender,
-                    p_received_at: mailData.received_at,
-                    p_in_reply_to: mailData.in_reply_to,
-                    p_reference_last: null,
-                    p_has_attachments: mailData.has_attachments,
-                    p_attachment_count: Array.isArray(p.attachments) ? p.attachments.length : 0,
-                });
-
-                if (dbError) {
-                    console.error("❌ RPC Fehler:", dbError.message);
-                    await sendFallbackAcknowledgement(mailData);
-                    await client.messageFlagsAdd(msg.seq, ["\\Seen"]);
-                    continue;
-                }
-
-                if (dbResult?.status === "success") {
-                    // Thread-ID aus DB lesen (wird vom RPC gesetzt)
-                    const { data: storedMail } = await supabase
-                        .from("emails")
-                        .select("thread_id")
-                        .eq("mail_id", mailData.mail_id)
-                        .maybeSingle();
-
-                    const queuedAt = new Date().toISOString();
-
-                    // Sofort in Pipeline — kein Dashboard-Klick nötig
-                    await supabase.from("emails").update({
-                        status: "queued",
-                        agent_logs: {
-                            empfaenger: mailData.empfaenger,
-                            forward_target: mailData.forward_target,
-                            queued_at: queuedAt,
-                        },
-                    }).eq("mail_id", mailData.mail_id);
-
-                    console.log(`   ✅ Mail gespeichert — Pipeline startet sofort`);
-
-                    runAiPipeline({
-                        mail_id: mailData.mail_id,
-                        betreff: mailData.betreff,
-                        body_text: mailData.body_text,
-                        absender: mailData.absender,
-                        empfaenger: mailData.empfaenger,
-                        forward_target: mailData.forward_target,
-                        force_process: false,
-                        queued_at: queuedAt,
-                    }, storedMail?.thread_id || null).catch(console.error);
-                }
-
-                await client.messageFlagsAdd(msg.seq, ["\\Seen"]);
-            }
-        });
-    } catch (err) {
-        console.error("❌ Fataler Fehler:", err);
-    } finally {
-        mailbox.release();
+    if (!imapClient || idleFor > IMAP_DEAD_MS) {
+        console.error(`💀 Watchdog: seit ${Math.round(idleFor / 60000)} Min keine IMAP-Aktivität — beende Prozess, PM2 startet neu.`);
+        process.exit(1);
     }
 
-    client.on("close", () => {
-        console.log("⚠️  Verbindung verloren. Reconnect in 10 Sekunden...");
-        setTimeout(startListener, 10000);
-    });
+    if (idleFor > IMAP_STALE_MS) {
+        console.warn(`🩺 Watchdog: seit ${Math.round(idleFor / 60000)} Min still — erzwinge Scan zur Lebendprüfung.`);
+        try {
+            await drainInbox(imapClient);
+            lastImapActivity = Date.now();
+        } catch (err: any) {
+            console.error(`❌ Watchdog-Scan fehlgeschlagen: ${err?.message || err} — erzwinge Reconnect.`);
+            try { imapClient.close(); } catch { /* Verbindung ist ohnehin hin */ }
+            imapClient = null;
+        }
+    }
 }
 
 // ─── Archivierung: verhindert erneuten Rückstau ──────────────────────────────
@@ -751,10 +1187,16 @@ async function archiveStaleMails() {
     // gerade erst (z.B. "Trotzdem bearbeiten") erneut angestoßen wurde und einen frischen,
     // noch unbestätigten Entwurf hat. agent_logs.queued_at ist das verlässlichere "zuletzt
     // angefasst"-Signal, received_at bleibt sonst für immer der Eingangszeitpunkt.
+    // "queued" und "send_failed" gehören dazu: eine Mail, deren Pipeline dauerhaft
+    // scheitert, bzw. eine endgültig unzustellbare, blieb sonst für immer in der
+    // aktiven Ansicht stehen.
+    // Nur agent_logs->>queued_at statt des kompletten agent_logs-Objekts laden —
+    // das Feld ist das einzige, was hier ausgewertet wird, während agent_logs pro
+    // Zeile 30–100 KB groß sein kann (viermal täglich über den gesamten Bestand).
     const { data: candidates, error } = await supabase
         .from("emails")
-        .select("id, agent_logs")
-        .in("status", ["new", "processing", "failed"])
+        .select("id, agent_logs->>queued_at")
+        .in("status", ["new", "queued", "processing", "failed", "send_failed"])
         .lt("received_at", cutoff);
 
     if (error) {
@@ -765,7 +1207,7 @@ async function archiveStaleMails() {
 
     const staleIds = candidates
         .filter((row: any) => {
-            const queuedAt = row.agent_logs?.queued_at;
+            const queuedAt = row.queued_at;
             return !queuedAt || queuedAt < cutoff;
         })
         .map((row: any) => row.id);
@@ -786,14 +1228,89 @@ async function archiveStaleMails() {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-process.on("uncaughtException", (err) => console.error("Uncaught:", err));
-process.on("unhandledRejection", (reason) => console.error("Unhandled:", reason));
+// Bekannte, sauber behandelte IMAP-Socketfehler dürfen den Prozess nicht töten —
+// scheduleReconnect() fängt sie ab. ALLES andere ist ein unbekannter Zustand: dann
+// lieber sterben und von PM2 sauber neu starten lassen.
+//
+// Der bisherige Zustand war das Gegenteil davon: uncaughtException wurde nur geloggt,
+// der Prozess lief mit halb geschlossenen Sockets und totem Listener weiter, PM2 sah
+// "online" und startete deshalb nie neu. Genau das hat den siebentägigen Ausfall
+// unsichtbar gemacht.
+const RECOVERABLE_IMAP_ERRORS = ["NoConnection", "ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNREFUSED"];
+
+function isRecoverable(err: any): boolean {
+    const code = err?.code || "";
+    const msg = String(err?.message || err || "");
+    return RECOVERABLE_IMAP_ERRORS.includes(code) || msg.includes("Socket timeout") || msg.includes("Connection not available");
+}
+
+process.on("uncaughtException", (err: any) => {
+    console.error("Uncaught:", err);
+    if (isRecoverable(err)) {
+        console.warn("→ Bekannter Verbindungsfehler, Reconnect-Logik übernimmt.");
+        return;
+    }
+    console.error("→ Unbekannter Zustand. Beende Prozess, PM2 startet neu.");
+    process.exit(1);
+});
+
+process.on("unhandledRejection", (reason: any) => {
+    console.error("Unhandled:", reason);
+    if (!isRecoverable(reason)) {
+        console.error("→ Unbehandelte Rejection in unbekanntem Zustand. Beende Prozess.");
+        process.exit(1);
+    }
+});
 
 // Selbst-planende Schleifen statt setInterval — dadurch kann die Pause zwischen
 // Durchläufen bei wiederholten DB-Fehlern per nextDelay() dynamisch wachsen (s.o.),
 // und ein einzelner langsamer Zyklus überlappt nie mit dem nächsten.
 function scheduleProcessOutbound() {
     processOutbound().finally(() => setTimeout(scheduleProcessOutbound, nextDelay(10000)));
+}
+
+// Heartbeat: schreibt regelmäßig ein Lebenszeichen. Ein externer Uptime-Check
+// (Healthchecks.io, Uptime Kuma) kann darauf alarmieren.
+//
+// Das ist der Punkt, an dem der siebentägige Ausfall im Juli hätte auffallen müssen:
+// PM2 meldete "online", die Poller liefen, nur der Mailempfang war tot — es gab
+// schlicht niemanden und nichts, das den Unterschied bemerkt hätte.
+async function heartbeat() {
+    const idleMin = Math.round((Date.now() - lastImapActivity) / 60000);
+    const status = imapClient ? "verbunden" : "GETRENNT";
+    console.log(`💓 Heartbeat: IMAP ${status}, letzte Aktivität vor ${idleMin} Min, ${activePipelines} Pipeline(s) aktiv.`);
+
+    const url = process.env.HEARTBEAT_URL;
+    if (!url) return;
+    try {
+        // Nur pingen, wenn der Empfang wirklich lebt — sonst meldet der Heartbeat
+        // "gesund", während das System taub ist. Genau dieser Fehler soll hier nicht
+        // noch einmal entstehen.
+        if (imapClient && idleMin < 30) {
+            await fetch(url, { signal: AbortSignal.timeout(10000) });
+        } else {
+            console.warn("💔 Heartbeat NICHT gesendet — IMAP nicht gesund. Externer Alarm wird auslösen.");
+        }
+    } catch (err: any) {
+        console.warn(`⚠️  Heartbeat-Ping fehlgeschlagen: ${err?.message || err}`);
+    }
+}
+
+// Täglicher Überblick über hängende Mails. Macht die Sackgassen sichtbar, bevor
+// sich ein Gast beschwert.
+async function statusReport() {
+    const { data, error } = await supabase.from("emails").select("status");
+    if (error || !data) return;
+
+    const counts: Record<string, number> = {};
+    for (const row of data as any[]) counts[row.status] = (counts[row.status] || 0) + 1;
+
+    const summary = Object.entries(counts).map(([s, c]) => `${s}=${c}`).join("  ");
+    console.log(`📊 Status-Report: ${summary}`);
+
+    const stuck = (counts["queued"] || 0) + (counts["new"] || 0) + (counts["sending"] || 0);
+    if (stuck > 10) console.warn(`⚠️  ${stuck} Mail(s) in Zwischenstatus — bitte prüfen.`);
+    if (counts["send_failed"]) console.error(`⛔ ${counts["send_failed"]} Mail(s) endgültig unzustellbar — manuelle Nacharbeit nötig.`);
 }
 function scheduleWatchNewMails() {
     // watchNewMails ist nur noch Sicherheitsnetz (neue Mails triggern die Pipeline direkt im
@@ -802,10 +1319,44 @@ function scheduleWatchNewMails() {
     watchNewMails().finally(() => setTimeout(scheduleWatchNewMails, nextDelay(5000)));
 }
 
-warmProductCache().then(() => {
-    scheduleProcessOutbound();
-    scheduleWatchNewMails();
-    setInterval(archiveStaleMails, 6 * 3600 * 1000); // alle 6h
-    archiveStaleMails().catch(console.error);
-    startListener().catch(console.error);
+// Der Produkt-Cache ist bewusst NICHT mehr Startvoraussetzung. Hängt 3RPMS (halb
+// offener Socket, kein Timeout im alten Code), blockierte der komplette Prozess:
+// bis zu 25 Minuten kein IMAP-Listener, kein Versand, kein Poller — bei einem
+// PM2-Status von "online" und einer einzigen Logzeile "Lade Hotel-Settings...".
+// Empfang und Versand starten jetzt sofort; der Cache läuft daneben warm.
+scheduleProcessOutbound();
+scheduleWatchNewMails();
+
+setInterval(archiveStaleMails, 6 * 3600 * 1000);
+archiveStaleMails().catch(console.error);
+
+// Sicherheitsnetz gegen verpasste "exists"-Events (Push verloren, Server sendet nicht).
+setInterval(() => {
+    if (imapClient) {
+        drainInbox(imapClient).catch((err: any) =>
+            console.error("❌ drainInbox (Intervall) Fehler:", err?.message || err)
+        );
+    }
+}, 2 * 60 * 1000);
+
+setInterval(() => { imapWatchdog().catch(console.error); }, 5 * 60 * 1000);
+
+// Holt Mails zurück, die zwischen Claim und Versand hängen geblieben sind.
+setInterval(() => { recoverStuckSending().catch(console.error); }, 5 * 60 * 1000);
+recoverStuckSending().catch(console.error);
+
+setInterval(() => { heartbeat().catch(console.error); }, 5 * 60 * 1000);
+setInterval(() => { statusReport().catch(console.error); }, 6 * 3600 * 1000);
+statusReport().catch(console.error);
+
+startListener().catch((err: any) => {
+    console.error(`❌ Erster Verbindungsaufbau fehlgeschlagen: ${err?.message || err}`);
+    scheduleReconnect(0);
 });
+
+// Cache asynchron, mit periodischer Auffrischung. Vorher wurde er genau einmal beim
+// Start geladen — schlug ein Hotel fehl, blieb sein Katalog für die gesamte
+// Prozesslaufzeit (Wochen) leer und der Action Agent formulierte dauerhaft ohne
+// Zimmerkategorien, ohne dass das irgendwo aufgefallen wäre.
+warmProductCache().catch(console.error);
+setInterval(() => { warmProductCache().catch(console.error); }, 6 * 3600 * 1000);

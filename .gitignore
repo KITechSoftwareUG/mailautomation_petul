@@ -13,3 +13,6 @@ mcp.json
 package-lock.json
 .vercel
 .tmp
+
+# Temporäre Skripte und Datenbank-Backups (enthalten Gästedaten)
+backend/.tmp/

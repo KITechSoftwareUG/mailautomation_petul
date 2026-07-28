@@ -55,6 +55,12 @@ export function resolveHotelName(recipientEmail: string, forwardTarget: string =
   return hotel?.name || "Unbekannt / Petul";
 }
 
+// Ohne Timeout blockiert ein halb offener Socket (der klassische Teilausfall: TCP wird
+// angenommen, es kommt nur nie eine Antwort) den gesamten Aufrufer. Konkret hing damit
+// watchNewMails bis zu 25 Minuten fest — 5 Mails sequenziell × undici-Default von 5 Min.
+// Für die Rezeptionistin sah das aus wie ein totes Dashboard.
+const REQUEST_TIMEOUT_MS = 15000;
+
 export async function query3RPMS<T>(apiKey: string, query: string, variables: any = {}): Promise<T> {
   if (!apiKey) {
     throw new Error("Missing 3RPMS API Key for this hotel. Please check your .env settings.");
@@ -68,7 +74,15 @@ export async function query3RPMS<T>(apiKey: string, query: string, variables: an
       'Accept-Language': 'de',
     },
     body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+
+  // Der Status wurde bisher nie geprüft. Bei einem 502 mit HTML-Body warf erst
+  // response.json() einen SyntaxError — eine irreführende Fehlermeldung, die den
+  // eigentlichen Grund (3RPMS ist down) verschleierte.
+  if (!response.ok) {
+    throw new Error(`3RPMS HTTP ${response.status} ${response.statusText}`);
+  }
 
   const result = (await response.json()) as ThreeRPMSResponse<T>;
 

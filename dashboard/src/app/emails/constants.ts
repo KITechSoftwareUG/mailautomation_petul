@@ -4,13 +4,13 @@
 // Egress-Kontingent-Überlauf. Body wird stattdessen gezielt pro ausgewählter Mail nachgeladen
 // (fetchEmailBody).
 export const EMAIL_LIST_SELECT = `
-    id, mail_id, betreff, received_at, status, intent,
+    id, mail_id, betreff, received_at, status, intent, has_attachments,
     policy_decision_allowed, policy_decision_reason, api_action, draft_reply,
     agent_logs, senders!inner(email, name)
 `;
 
 export const EMAIL_SELECT = `
-    id, mail_id, betreff, body_text, body_html, received_at, status, intent,
+    id, mail_id, betreff, body_text, body_html, received_at, status, intent, has_attachments,
     policy_decision_allowed, policy_decision_reason, api_action, draft_reply,
     agent_logs, senders!inner(email, name)
 `;
@@ -19,15 +19,16 @@ export const EMAIL_SELECT = `
 // taucht hier bewusst nirgends auf — sonst wäre das der exakt gleiche Bug wie
 // vorher: ein ungefilterter "die letzten 50" Query begräbt die Mails, die
 // tatsächlich noch Aufmerksamkeit brauchen, unter dem täglichen Ignored/Spam-Rauschen.
-export const ACTIVE_STATUSES = ["new", "queued", "processing", "failed", "approved"];
+// "sending" (Versand läuft gerade) und "send_failed" (nach 5 Versuchen endgültig
+// unzustellbar) MÜSSEN hier stehen — sonst verschwindet eine Mail in genau dem Moment
+// aus der Ansicht, in dem sie Aufmerksamkeit braucht.
+export const ACTIVE_STATUSES = ["new", "queued", "processing", "failed", "approved", "sending", "send_failed"];
 export const DONE_STATUSES = ["ignored", "sent", "rejected"];
 
-// Reine Dashboard-Anzeige-Einstellung: blendet den historischen Backlog (Rückstau aus der
-// zweiwöchigen Supabase-Egress-Sperre, alte Testmails) aus der Ansicht aus, damit sie sich
-// auf das konzentriert, was ab jetzt tatsächlich neu reinkommt. Nichts wird gelöscht oder
-// anders verarbeitet — das Backend analysiert weiterhin JEDE Mail unabhängig vom Datum,
-// dieser Wert filtert ausschließlich, was fetchEmails() dem Dashboard zurückgibt.
-// Bewusst ein fixer Zeitstempel (nicht `new Date()`) — sonst würde jeder Vercel-Redeploy
-// die Grenze stillschweigend auf den Deploy-Zeitpunkt zurücksetzen und Mails verstecken,
-// die zwischen zwei Deploys ankamen. Bei Bedarf hier einfach anpassen oder entfernen.
-export const DASHBOARD_SHOW_SINCE = "2026-07-28T05:15:04.000Z";
+// Der frühere Datumsfilter (DASHBOARD_SHOW_SINCE) ist entfallen. Er filterte auf
+// received_at — und received_at ist der Date-Header, den der ABSENDER setzt. Eine Mail
+// von einem Handy mit falsch gestellter Uhr, oder eine, die zwei Tage in einer
+// Relay-Queue hing, war damit unsichtbar: vollständig verarbeitet, mit fertigem Entwurf,
+// aber niemals in der Liste. Der historische Rückstau, den der Filter kaschieren sollte,
+// wurde stattdessen aus der Datenbank entfernt — damit ist der Filter überflüssig
+// und richtet nur noch Schaden an.

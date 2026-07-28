@@ -32,9 +32,19 @@ type Email = {
     policy_decision_reason?: string;
     api_action?: string;
     draft_reply?: string;
+    has_attachments?: boolean;
     agent_logs?: any;
     senders?: { email: string; name?: string }[];
 };
+
+// Wohin die Antwort tatsächlich geht. Bei Portal-Mails (Booking.com, Airbnb) ist der
+// Absender noreply@… und nur Reply-To erreicht den Gast — der Unterschied war im
+// Dashboard bisher nirgends sichtbar, obwohl er darüber entscheidet, ob der Gast
+// die Antwort je zu sehen bekommt.
+function getReplyRecipient(email: Email | null | undefined): string | null {
+    if (!email) return null;
+    return email.agent_logs?.reply_to || email.senders?.[0]?.email || null;
+}
 
 function getApiActionLabel(action: string | undefined): { title: string; beschreibung: string } | null {
     if (!action || action === "none") return null;
@@ -314,7 +324,14 @@ function MailBodyContent({ email, className = "" }: { email: Email; className?: 
                 .replace(/&amp;/g, "&")
                 .replace(/&lt;/g, "<")
                 .replace(/&gt;/g, ">")
-                .replace(/&#\d+;/g, "")
+                .replace(/&quot;/g, '"')
+                // Numerische Entities werden DEKODIERT, nicht gelöscht. Vorher stand hier
+                // .replace(/&#\d+;/g, "") — aus "Gr&#252;&#223;e" wurde damit "Gre" und aus
+                // "G&#228;ste" wurde "Gste". Die KI bekam den korrekten Rohtext, die
+                // Rezeptionistin las eine verstümmelte Fassung und beurteilte den Entwurf
+                // auf dieser Grundlage.
+                .replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
+                .replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(Number(d)))
                 .replace(/‌/g, "")
                 .trim()}
         </div>
@@ -393,6 +410,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         initialEmails.find((e) => e.status === "processing")?.id || null
     );
     const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting" | "regenerating">("idle");
+    const [actionError, setActionError] = useState<string | null>(null);
     const [isMinimized, setIsMinimized] = useState(false);
     const [isMailExpanded, setIsMailExpanded] = useState(false);
     const [step, setStep] = useState(0);
@@ -551,9 +569,21 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
         if (!currentMail) return;
         const currentId = currentMail.id;
         setActionStatus(action === "approve" ? "approving" : "rejecting");
-        await approveOrRejectMail(currentId, action, action === "approve" ? editedDraft : undefined);
+        setActionError(null);
+
+        // Der Rückgabewert wurde bisher komplett verworfen. Schlug die Freigabe fehl —
+        // etwa weil die Mail zwischenzeitlich neu analysiert oder von einer Kollegin
+        // freigegeben wurde —, sprang die Oberfläche trotzdem zur nächsten Mail und
+        // suggerierte Erfolg. Der Gast bekam nie eine Antwort, und niemand erfuhr davon.
+        const result = await approveOrRejectMail(currentId, action, action === "approve" ? editedDraft : undefined);
         await fetchEmails();
         setActionStatus("idle");
+
+        if (result?.error) {
+            setActionError(result.error);
+            return; // bewusst KEIN Weiterspringen — die Mail braucht Aufmerksamkeit
+        }
+
         // Nach kurzer Verzögerung zur nächsten Mail wechseln
         setTimeout(() => autoSelectNext(currentId), 400);
     };
@@ -794,9 +824,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             {currentMail.status === "ignored" ? (() => {
                                                 const isPortal = currentMail.intent === "Portal-Benachrichtigung";
                                                 const isSystem = currentMail.intent === "System-Benachrichtigung";
-                                                const isSpam   = !isPortal && !isSystem;
                                                 const label    = isPortal ? "Portal-Benachrichtigung" : isSystem ? "System-Benachrichtigung" : "Spam / Irrelevant";
-                                                const sub      = isPortal ? "Automatische Buchungsportal-Nachricht — keine Antwort nötig"
+                                                const sub      = isPortal ? "Buchungsportal-Nachricht — kann echte Gastanfragen enthalten"
                                                                : isSystem ? "Automatische Systemnachricht — keine Antwort nötig"
                                                                : "Als Spam oder irrelevant eingestuft";
                                                 const color    = isPortal || isSystem ? "#6082B6" : "#E2001A";
@@ -814,16 +843,20 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                                 </div>
                                                             </div>
                                                             <div className="flex items-center gap-2 shrink-0">
-                                                                {isSpam && (
-                                                                    <button
-                                                                        onClick={handleForceProcess}
-                                                                        disabled={actionStatus !== "idle"}
-                                                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#6082B6] text-white hover:bg-[#444444] text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-30"
-                                                                    >
-                                                                        <CheckCircle2 className="w-3 h-3" />
-                                                                        Trotzdem bearbeiten
-                                                                    </button>
-                                                                )}
+                                                                {/* Für ALLE ignorierten Kategorien, nicht nur Spam. Vorher galt
+                                                                    isSpam = !isPortal && !isSystem — Portal-Mails boten damit nur
+                                                                    "Neu prüfen" an, was ohne force_process erneut dieselbe
+                                                                    Klassifizierung erzeugt und wieder auf "ignored" landet.
+                                                                    Eine Airbnb-Nachricht "Wir kommen erst um 23 Uhr an, wie kommen
+                                                                    wir rein?" war damit strukturell unbeantwortbar. */}
+                                                                <button
+                                                                    onClick={handleForceProcess}
+                                                                    disabled={actionStatus !== "idle"}
+                                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#6082B6] text-white hover:bg-[#444444] text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-30"
+                                                                >
+                                                                    <CheckCircle2 className="w-3 h-3" />
+                                                                    Trotzdem bearbeiten
+                                                                </button>
                                                                 <button
                                                                     onClick={handleRegenerate}
                                                                     disabled={actionStatus !== "idle"}
@@ -887,6 +920,42 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         className="flex-1 w-full px-10 py-8 bg-white text-black resize-none outline-none font-sans text-[15px] lg:text-[16px] font-medium leading-relaxed tracking-wide selection:bg-[#6082B6] selection:text-white disabled:cursor-default custom-scrollbar border-0"
                                                     />
                                                 </motion.div>
+                                            )}
+
+                                            {/* Empfänger + Anhang-Hinweis: beides entscheidet darüber, ob der
+                                                Entwurf überhaupt sinnvoll ist, und war bisher unsichtbar. */}
+                                            {currentMail.status === "processing" && (
+                                                <div className="shrink-0 px-8 pt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+                                                    <div className="flex items-center gap-1.5 text-[9px] text-black/35">
+                                                        <Send className="w-3 h-3 text-[#6082B6]" />
+                                                        <span className="font-black uppercase tracking-widest">Antwort geht an:</span>
+                                                        <span className="font-mono text-black/60">{getReplyRecipient(currentMail) ?? "— keine Adresse —"}</span>
+                                                        {currentMail.agent_logs?.reply_to && (
+                                                            <span className="px-1.5 py-0.5 bg-[#6082B6]/10 text-[#6082B6] font-bold uppercase tracking-wide">
+                                                                via Reply-To
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {currentMail.has_attachments && (
+                                                        <div className="flex items-center gap-1.5 text-[9px] text-[#F39200]">
+                                                            <AlertTriangle className="w-3 h-3" />
+                                                            <span className="font-black uppercase tracking-widest">
+                                                                Mail enthält Anhang — im Postfach prüfen
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {/* Freigabe ist fehlgeschlagen — muss sichtbar sein, sonst geht
+                                                die Korrektur der Rezeptionistin unbemerkt verloren. */}
+                                            {actionError && (
+                                                <div className="shrink-0 mx-8 mb-3 px-4 py-3 border-l-4 border-[#E2001A] bg-[#E2001A]/8">
+                                                    <div className="text-[9px] font-black uppercase tracking-widest text-[#E2001A] mb-1">
+                                                        Nicht gesendet
+                                                    </div>
+                                                    <div className="text-[11px] leading-relaxed text-black/60">{actionError}</div>
+                                                </div>
                                             )}
 
                                             {/* Aktions-Buttons — nur bei "processing" */}
@@ -1059,10 +1128,31 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                                     Erst nach Bestätigung
                                                                 </div>
                                                             )}
-                                                            {currentMail.status === "sent" && (
+                                                            {/* "Ausgeführt" hing bisher allein am Status "sent" — auch dann,
+                                                                wenn die PMS-Mutation in Wahrheit fehlgeschlagen war. Die Mail
+                                                                hatte dem Gast dann etwas zugesagt (z.B. späterer Check-out),
+                                                                was im System nie ankam, und das Dashboard meldete grün. */}
+                                                            {currentMail.status === "sent" && !currentMail.agent_logs?.mutation_failed && (
                                                                 <div className="mt-2 flex items-center gap-1 text-[8px] text-[#009697] font-bold uppercase tracking-wide">
                                                                     <CheckCircle2 className="w-3 h-3" />
                                                                     Ausgeführt
+                                                                </div>
+                                                            )}
+                                                            {currentMail.status === "sent" && currentMail.agent_logs?.mutation_failed && (
+                                                                <div className="mt-2 p-2 bg-[#E2001A] text-white">
+                                                                    <div className="flex items-center gap-1 text-[8px] font-black uppercase tracking-wide">
+                                                                        <AlertTriangle className="w-3 h-3" />
+                                                                        NICHT ausgeführt — Nacharbeit nötig
+                                                                    </div>
+                                                                    <div className="mt-1 text-[9px] leading-snug opacity-90">
+                                                                        Die Antwort ist bereits beim Gast, die Änderung im PMS aber nicht.
+                                                                        Bitte manuell im 3RPMS nachtragen.
+                                                                    </div>
+                                                                    {currentMail.agent_logs?.mutation_error && (
+                                                                        <div className="mt-1 text-[8px] font-mono opacity-70 break-words">
+                                                                            {currentMail.agent_logs.mutation_error}
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                         </div>

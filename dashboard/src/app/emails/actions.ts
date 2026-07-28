@@ -1,7 +1,7 @@
 "use server";
 
 import { supabaseAdmin } from "@/utils/supabase/server";
-import { EMAIL_LIST_SELECT, ACTIVE_STATUSES, DONE_STATUSES, DASHBOARD_SHOW_SINCE } from "./constants";
+import { EMAIL_LIST_SELECT, ACTIVE_STATUSES, DONE_STATUSES } from "./constants";
 
 export async function fetchEmails() {
     const [activeResult, doneResult] = await Promise.all([
@@ -9,14 +9,12 @@ export async function fetchEmails() {
             .from("emails")
             .select(EMAIL_LIST_SELECT)
             .in("status", ACTIVE_STATUSES)
-            .gte("received_at", DASHBOARD_SHOW_SINCE)
             .order("received_at", { ascending: false })
             .limit(300),
         supabaseAdmin
             .from("emails")
             .select(EMAIL_LIST_SELECT)
             .in("status", DONE_STATUSES)
-            .gte("received_at", DASHBOARD_SHOW_SINCE)
             .order("received_at", { ascending: false })
             .limit(50),
     ]);
@@ -138,12 +136,30 @@ export async function approveOrRejectMail(emailId: string, action: "approve" | "
         ? { draft_reply: editedDraft, status: "approved" }
         : { status: "rejected" };
 
-    const { error } = await supabaseAdmin
+    // .select("id") ist hier nicht kosmetisch: ohne die Rückmeldung, ob überhaupt eine
+    // Zeile getroffen wurde, lief die Freigabe stumm ins Leere. Hatte eine Kollegin
+    // dieselbe Mail Sekunden früher freigegeben (Polling alle 15 s), traf der Filter
+    // .eq("status","processing") nichts — die eigenen Textkorrekturen waren weg, die
+    // Oberfläche meldete Erfolg und sprang zur nächsten Mail. Gesendet wurde die
+    // Version der Kollegin.
+    const { data, error } = await supabaseAdmin
         .from("emails")
         .update(update)
         .eq("id", emailId)
-        .eq("status", "processing"); // nur ein Entwurf, der tatsächlich noch zur Freigabe ansteht
+        .eq("status", "processing") // nur ein Entwurf, der tatsächlich noch zur Freigabe ansteht
+        .select("id");
 
-    if (error) console.error("approveOrRejectMail Fehler:", error.message);
-    return { error: error?.message ?? null };
+    if (error) {
+        console.error("approveOrRejectMail Fehler:", error.message);
+        return { error: error.message };
+    }
+
+    if (!data || data.length === 0) {
+        return {
+            error: "Diese Mail wurde zwischenzeitlich von jemand anderem bearbeitet oder neu analysiert. "
+                 + "Bitte die Ansicht aktualisieren und den Entwurf erneut prüfen — deine Änderungen wurden NICHT gesendet.",
+        };
+    }
+
+    return { error: null };
 }

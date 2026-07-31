@@ -6,13 +6,13 @@ import { useRouter } from "next/navigation";
 export default function LoginPage() {
     const router = useRouter();
     const [password, setPassword] = useState("");
-    const [error, setError] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
 
     const handleSubmit = async (e: FormEvent) => {
         e.preventDefault();
         setLoading(true);
-        setError(false);
+        setError(null);
 
         const res = await fetch("/api/auth", {
             method: "POST",
@@ -24,7 +24,10 @@ export default function LoginPage() {
             router.push("/");
             router.refresh();
         } else {
-            setError(true);
+            // Bei zu vielen Fehlversuchen bremst der Server (429) — dann ist "Falsches
+            // Passwort" irreführend, also die Meldung des Servers durchreichen.
+            const data = await res.json().catch(() => null);
+            setError(res.status === 429 && data?.error ? data.error : "Falsches Passwort");
             setPassword("");
             setLoading(false);
         }
@@ -74,8 +77,8 @@ export default function LoginPage() {
                         />
 
                         {error && (
-                            <p className="text-[11px] font-bold text-[#E2001A] uppercase tracking-widest text-center">
-                                Falsches Passwort
+                            <p className="text-[11px] font-bold text-[#E2001A] uppercase tracking-widest text-center leading-relaxed">
+                                {error}
                             </p>
                         )}
 

@@ -277,12 +277,42 @@ export async function searchReservationsByEmail(apiKey: string, email: string) {
     s.first_guest?.email?.toLowerCase() === email.toLowerCase()
   );
 
-  if (roomStays.length === 0) return null;
+  if (roomStays.length === 0) {
+    // Wichtige Unterscheidung: "nicht gefunden" ist nur dann verlässlich, wenn der
+    // Suchraum überhaupt vollständig war. Bei exakt 50 zurückgelieferten Aufenthalten
+    // ist die Liste am Limit abgeschnitten — der Gast kann sehr wohl existieren und
+    // nur außerhalb der ersten 50 liegen. Ein Haus mit mehr als 50 kommenden
+    // Aufenthalten hätte sonst dauerhaft "Gast nicht gefunden" gemeldet.
+    if (allStays.length >= 50) {
+      throw new Error(
+        "Gastsuche unvollständig: Das Hotel hat mehr als 50 kommende Aufenthalte, " +
+        "die Suche deckt nicht den gesamten Zeitraum ab. Bitte manuell im 3RPMS prüfen."
+      );
+    }
+    return null;
+  }
+
+  // Frühester Aufenthalt zuerst — die 3RPMS-Query liefert unsortiert, wodurch
+  // roomStays[0] (das, was das Dashboard anzeigt) bisher ein beliebiger Treffer war.
+  // Bei einem Gast mit zwei Buchungen konnten Panel und Entwurf verschiedene
+  // Aufenthalte meinen.
+  roomStays.sort((a: any, b: any) => String(a.reservation_from || "").localeCompare(String(b.reservation_from || "")));
+
+  // Mehrere Treffer auf dieselbe Adresse: typisch bei Firmenbuchungen, wo alle Zimmer
+  // auf buchung@firma.de laufen. Ohne diesen Hinweis nannte der Entwurf Zimmer, Datum
+  // und Preis irgendeiner dieser Buchungen — also womöglich die eines Kollegen.
+  const distinctGuests = new Set(
+    roomStays.map((s: any) => `${s.first_guest?.firstname || ""} ${s.first_guest?.lastname || ""}`.trim().toLowerCase())
+  );
 
   return {
     client: roomStays[0]?.first_guest,
     reservations: [],
     roomStays,
+    ambiguous: roomStays.length > 1,
+    ambiguityReason: roomStays.length > 1
+      ? `${roomStays.length} Aufenthalte auf diese E-Mail-Adresse${distinctGuests.size > 1 ? ` (${distinctGuests.size} verschiedene Namen — vermutlich Firmenbuchung)` : ""}. Zuordnung bitte manuell prüfen.`
+      : null,
   };
 }
 

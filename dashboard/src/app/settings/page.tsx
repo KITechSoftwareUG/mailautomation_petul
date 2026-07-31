@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Save, Check, Loader2 } from "lucide-react";
+import { ArrowLeft, Save, Check, Loader2, KeyRound, LogOut } from "lucide-react";
 import { fetchSignatures, saveSignature } from "./actions";
+import { logout } from "../auth/actions";
+import { AccountPanel } from "./AccountPanel";
 
 type SignatureRow = {
     id: string;
@@ -16,6 +18,7 @@ export default function SettingsPage() {
     const router = useRouter();
     const [rows, setRows] = useState<SignatureRow[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [view, setView] = useState<"signatures" | "account">("signatures");
     const [draft, setDraft] = useState("");
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -38,6 +41,7 @@ export default function SettingsPage() {
         setSelectedId(row.id);
         setDraft(row.signature);
         setSaved(false);
+        setView("signatures");
     };
 
     const handleSave = async () => {
@@ -63,15 +67,18 @@ export default function SettingsPage() {
                         Zurück
                     </button>
                     <h1 className="text-[14px] font-black uppercase tracking-widest">Einstellungen</h1>
-                    <p className="text-[10px] text-white/40 mt-1">E-Mail-Signaturen</p>
+                    <p className="text-[10px] text-white/40 mt-1">Signaturen & Zugang</p>
                 </div>
                 <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-3">
+                    <div className="px-3 pb-1.5 text-[8px] font-black uppercase tracking-widest text-white/25">
+                        Signaturen
+                    </div>
                     {rows.map((row) => (
                         <button
                             key={row.id}
                             onClick={() => handleSelect(row)}
                             className={`w-full text-left px-3 py-2.5 mb-0.5 transition-all duration-150 border-l-2 ${
-                                selectedId === row.id
+                                view === "signatures" && selectedId === row.id
                                     ? "bg-white/10 border-[#6082B6] text-white"
                                     : "hover:bg-white/5 border-transparent text-white/45"
                             }`}
@@ -80,12 +87,39 @@ export default function SettingsPage() {
                             <div className="text-[9px] uppercase tracking-widest opacity-30 mt-0.5">{row.hotel_id}</div>
                         </button>
                     ))}
+
+                    <div className="px-3 pt-4 pb-1.5 text-[8px] font-black uppercase tracking-widest text-white/25">
+                        Sicherheit
+                    </div>
+                    <button
+                        onClick={() => setView("account")}
+                        className={`w-full text-left px-3 py-2.5 mb-0.5 transition-all duration-150 border-l-2 flex items-center gap-2 ${
+                            view === "account"
+                                ? "bg-white/10 border-[#6082B6] text-white"
+                                : "hover:bg-white/5 border-transparent text-white/45"
+                        }`}
+                    >
+                        <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                        <span className="text-[11px] font-bold leading-snug">Passwort ändern</span>
+                    </button>
+                </div>
+
+                <div className="shrink-0 border-t border-white/10 p-2">
+                    <button
+                        onClick={() => logout()}
+                        className="w-full flex items-center gap-2 px-3 py-2.5 text-white/45 hover:bg-white/5 hover:text-white transition-all duration-150"
+                    >
+                        <LogOut className="w-3.5 h-3.5 shrink-0" />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Abmelden</span>
+                    </button>
                 </div>
             </div>
 
             {/* Editor */}
             <div className="flex-1 flex flex-col min-w-0">
-                {loading ? (
+                {view === "account" ? (
+                    <AccountPanel />
+                ) : loading ? (
                     <div className="flex-1 flex items-center justify-center text-black/20">
                         <Loader2 className="w-6 h-6 animate-spin" />
                     </div>

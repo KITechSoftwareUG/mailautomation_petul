@@ -13,6 +13,17 @@ Petul Hotels GmbH
  * Fällt zurück auf die "DEFAULT"-Zeile, wenn kein Hotel identifiziert wurde oder keine hotelspezifische
  * Signatur existiert, und auf FALLBACK_SIGNATURE, wenn selbst das fehlschlägt.
  */
+// Erkennt die ausgelieferten Seed-Platzhalter. Gingen sie ungefüllt raus, stünde in
+// jeder Mail an einen Gast eine erfundene Anschrift, und die Pflichtangaben nach
+// §5 TMG / §35a GmbHG wären unvollständig. Die Prüfung ist bewusst großzügig — ein
+// falscher Alarm kostet einen Blick ins Dashboard, ein übersehener Platzhalter geht
+// an echte Gäste.
+const PLACEHOLDER_PATTERN = /Musterstra|Musterstadt|\[Name\]|\[Nummer\]|\[Telefon\]|\[E-?Mail\]|44000|XXX|TODO/i;
+
+export function hasPlaceholder(signature: string | null | undefined): boolean {
+    return PLACEHOLDER_PATTERN.test(signature || "");
+}
+
 export async function getSignature(supabase: SupabaseClient, hotelId: string | null | undefined): Promise<string> {
     const lookupId = hotelId || "DEFAULT";
 

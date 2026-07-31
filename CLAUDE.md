@@ -164,6 +164,7 @@ Hotel-Auswahl im Dashboard hatte keinerlei Effekt, s. Häufige Probleme unten).
 | `emails` | Alle eingehenden Mails + status + draft_reply + agent_logs (JSONB) |
 | `senders` | Absender-Profile (email, name, hotel_id) |
 | `hotel_signatures` | Konfigurierbare Signaturen pro Hotel — editierbar im Dashboard `/settings` |
+| `dashboard_auth` | Genau eine Zeile: Passwort-Hash + Session-Token des Dashboards (s. Sicherheitsarchitektur) |
 
 `emails.agent_logs` (JSONB) enthält: `intentData`, `policyData`, `actionData`, `threeRpmsData`,
 `inventoryData`, `target_hotel` (aufgelöster Hotelname, vom Backend gesetzt), `ai_force_hotel`
@@ -184,6 +185,11 @@ fehl (genau das war der Bug, der `processOutbound` monatelang lahmgelegt hat).
 
 `hotel_signatures` hat Zeilen für `H1`–`H5` + `DEFAULT`. Platzhalter-Adressen sind drin —
 echte Adressen bitte im Dashboard unter `/settings` eintragen.
+
+`dashboard_auth` (`backend/supabase_migration_dashboard_auth.sql`) hat **RLS an und absichtlich
+keine einzige Policy** — nur der Service-Role-Key kommt an die Zeile. Nicht dem Muster von
+`hotel_signatures` folgen: eine "Public read access"-Policy würde Passwort-Hash und
+Session-Geheimnis für jeden anon-Key lesbar machen.
 
 ---
 
@@ -235,9 +241,9 @@ Für `processing`-Mails: Entwurf-Textarea + "Bestätigen & Senden" / "Ablehnen" 
 
 ## Sicherheitsarchitektur (Dashboard ↔ Supabase)
 
-Das Dashboard hat **kein Supabase Auth** — Zugriffsschutz ist ausschließlich das
-Passwort-Cookie aus `proxy.ts` (`DASHBOARD_PASSWORD`/`SESSION_SECRET`). Alle Datenbankzugriffe
-laufen deshalb **ausschließlich serverseitig** über Next.js Server Actions:
+Das Dashboard hat **kein Supabase Auth** — Zugriffsschutz ist ausschließlich ein
+Passwort-Cookie, geprüft in `proxy.ts`. Alle Datenbankzugriffe laufen deshalb
+**ausschließlich serverseitig** über Next.js Server Actions:
 
 - `dashboard/src/utils/supabase/server.ts` — Service-Role-Client, liest `SUPABASE_URL` +
   `SUPABASE_SERVICE_ROLE_KEY` (server-only, **kein** `NEXT_PUBLIC_`-Prefix). Darf **niemals**
@@ -248,6 +254,34 @@ laufen deshalb **ausschließlich serverseitig** über Next.js Server Actions:
   exportieren darf.
 - Client-Komponenten (`EmailFeed.tsx`, `settings/page.tsx`) rufen nur noch diese Server Actions
   auf — es gibt **keinen** Supabase-Client mehr im Browser-Bundle.
+
+### Anmelden, Abmelden, Passwort ändern
+
+Alle Zugangslogik liegt in `dashboard/src/utils/auth.ts` (server-only — **nie** aus einer
+`"use client"`-Datei importieren). Quelle der Wahrheit ist die Tabelle `dashboard_auth`:
+
+| Datei | Rolle |
+|---|---|
+| `dashboard/src/utils/auth.ts` | Hashing (scrypt aus `node:crypto`), Session-Prüfung, Passwortwechsel |
+| `dashboard/src/proxy.ts` | Prüft das Cookie bei jedem Request gegen den aktuellen `session_token` |
+| `dashboard/src/app/api/auth/route.ts` | `POST` = Login (mit IP-Rate-Limit), `DELETE` = Cookie löschen |
+| `dashboard/src/app/auth/actions.ts` | Server Actions `logout()` und `changePassword()` |
+| `dashboard/src/app/settings/AccountPanel.tsx` | Formular unter `/settings` → "Passwort ändern" |
+
+- **Abmelden:** Logout-Symbol in der Sidebar (Mail-Ansicht **und** `/settings`) → löscht das
+  Cookie, landet auf `/login`.
+- **Passwort ändern:** `/settings` → "Passwort ändern". Verlangt das aktuelle Passwort.
+- **Ein Passwortwechsel würfelt `session_token` neu und meldet damit ALLE anderen Geräte ab.**
+  Das ist Absicht (ausgeschiedene Mitarbeiterinnen aussperren), kein Bug. Nur der Browser, der
+  die Änderung vornimmt, bekommt sofort ein frisches Cookie und bleibt drin.
+- **Kein Passwort im Klartext:** in der DB steht nur ein scrypt-Hash.
+- **Env-Fallback:** Solange `dashboard_auth` fehlt oder leer ist, gelten wie früher
+  `DASHBOARD_PASSWORD` + `SESSION_SECRET`. Der erste erfolgreiche Login überführt beides
+  automatisch in die Tabelle (Hash + bestehender `SESSION_SECRET` als Token, damit niemand
+  rausfliegt). **Ab dann ist die Env-Var wirkungslos** — das Passwort ändert man nur noch im
+  Dashboard, nicht mehr in Vercel.
+- **Bei Supabase-Ausfall** (z.B. Egress-Sperre) gilt der zuletzt gelesene Stand weiter, statt
+  alle auszusperren; ist auch der nicht da, wird der Zugriff verweigert (fail closed).
 
 **Historisch:** Bis Juli 2026 lief `NEXT_PUBLIC_SUPABASE_ANON_KEY` mit dem echten
 Service-Role-Key (voller DB-Zugriff, RLS-Bypass) — dadurch war er ~104 Tage lang öffentlich im
@@ -260,7 +294,10 @@ rotiert worden sein (Settings → API); falls nicht, dringend nachholen.
 
 | Problem | Wahrscheinlichste Ursache | Lösung |
 |---|---|---|
-| **Backend tut nichts, alle Mails bleiben liegen, `pm2 logs` voller Fehler** | ⚠️ **Laufender Incident, Stand 14.07.2026:** Supabase-Egress-Kontingent überschritten (`exceed_egress_quota`) — Supabase blockiert das GESAMTE Projekt, jeder DB-Zugriff (`watchNewMails`, `processOutbound`, `archiveStaleMails`) schlägt fehl. Kein Code-Bug — 3RPMS selbst läuft parallel einwandfrei (Settings laden beim PM2-Start normal). | **Prüfen, ob noch aktiv:** `pm2 logs petul-mail-automation --lines 20` — Text `exceed_egress_quota` = noch blockiert. **Fix (nur der Projekt-Owner kann das):** Supabase-Dashboard (Projekt `uxqcpmnanjfyztyhsdsi`) → Settings → Billing → Plan upgraden oder Spend-Cap entfernen. Ist es behoben, diese Zeile aus der Tabelle entfernen. |
+| **Backend tut nichts, alle Mails bleiben liegen, `pm2 logs` voller Fehler** | Supabase-Egress-Kontingent überschritten (`exceed_egress_quota`) — Supabase blockiert dann das GESAMTE Projekt, jeder DB-Zugriff (`watchNewMails`, `processOutbound`, `archiveStaleMails`) schlägt fehl. Kein Code-Bug: 3RPMS läuft parallel weiter (Settings laden beim PM2-Start normal). Trat am 14.07.2026 auf, **seit 31.07.2026 wieder normal** (Backend verarbeitet Mails, PostgREST antwortet mit 200). | **Prüfen:** `pm2 logs petul-mail-automation --lines 20` — Text `exceed_egress_quota` = blockiert. **Fix (nur der Projekt-Owner):** Supabase-Dashboard (Projekt `uxqcpmnanjfyztyhsdsi`) → Settings → Billing → Plan upgraden oder Spend-Cap entfernen. |
+| Nach einem Passwortwechsel sind alle Rezeptionistinnen ausgeloggt | Kein Fehler — der Wechsel widerruft absichtlich jede bestehende Session (s. Sicherheitsarchitektur) | Neues Passwort im Team weitergeben; einmal neu anmelden genügt |
+| Passwortwechsel meldet "Die Tabelle dashboard_auth fehlt" | `backend/supabase_migration_dashboard_auth.sql` wurde noch nicht im Supabase SQL-Editor ausgeführt | Migration ausführen. Bis dahin läuft der Login unverändert über `DASHBOARD_PASSWORD` weiter |
+| Login sagt "Zu viele Fehlversuche" | Rate-Limit greift ab 20 Fehlversuchen pro IP in 15 Minuten — die ganze Rezeption teilt sich eine IP | 15 Minuten warten. Grenze steht in `dashboard/src/app/api/auth/route.ts` (`MAX_ATTEMPTS`) |
 | Manuelle Hotel-Wahl im Dashboard-Selector ändert nichts an PMS-Daten/Entwurf | **(behoben, Commit 7c2c32c)** `agent_logs.ai_force_hotel` wurde im Backend nie gelesen — jeder Pipeline-Re-Run hat das Hotel erneut (ggf. wieder falsch/unklar) bestimmt, die manuelle Auswahl verpuffte folgenlos | `runAiPipeline()` prüft `ai_force_hotel` jetzt zuerst, mit absolutem Vorrang (s. Hotel-Erkennung oben). Falls wieder wirkungslos: PM2-Neustart nach der letzten Backend-Änderung geprüft? |
 | Entwurf/"Kopieren"/"Bestätigen & Senden" wirken nach Mail-Klick 2s eingefroren | **(behoben, Commit 7c2c32c)** `EmailFeed.tsx` hatte eine feste 2s-Fake-Progress-Animation (Text bei `opacity: 0.04`, Buttons gesperrt) — obwohl Status `processing` den Entwurf per Definition schon fertig bedeutet | Animation springt jetzt sofort auf `step=4`, sobald `draft_reply` bereits vorhanden ist — echte Wartezeit nur noch, wenn tatsächlich kein Entwurf da ist |
 | Mail bleibt bei Klick auf eine "neue" Mail ohne Hotel-/PMS-Daten hängen | **(behoben, Commit 7c2c32c)** `selectMail()` in `emails/actions.ts` überschrieb `agent_logs` komplett statt zu mergen — `empfaenger`/`forward_target` (primärer Hotel-Erkennungsweg) gingen verloren | `selectMail()` merged jetzt `currentAgentLogs` wie die übrigen Aktionen (`updateHotel`/`regenerateDraft`/`forceProcess`) |

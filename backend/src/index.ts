@@ -27,7 +27,7 @@ import {
     getInventory,
     getHotelSettings,
 } from "./utils/threerpms";
-import { getSignature } from "./utils/signatures";
+import { getSignature, hasPlaceholder } from "./utils/signatures";
 
 dotenv.config();
 
@@ -406,6 +406,14 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             return;
         }
 
+        // Mehrere Aufenthalte auf dieselbe E-Mail-Adresse: der Entwurf darf dann keine
+        // konkreten Buchungsdaten behaupten, weil nicht feststeht, welche gemeint ist.
+        // Das ist der Fall der Firmenbuchung (drei Zimmer auf buchung@firma.de) — sonst
+        // nennt die Antwort an Herrn Klein die Buchungsdaten von Frau Groß.
+        if (prefetchedPmsData?.ambiguous) {
+            console.warn(`   ⚠️  Mehrdeutige PMS-Zuordnung: ${prefetchedPmsData.ambiguityReason}`);
+        }
+
         // 5. Action Agent — PMS-Daten bereits vorhanden, kein extra Lookup-Step nötig
         console.log("   - [Step 3] Action Agent formuliert Antwort...");
         const productCatalog = hotel ? (hotelProductsCache[hotel?.id ?? ""] ?? null) : null;
@@ -448,6 +456,8 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 hotel_source: hotelSource,
                 forward_target: mailData.forward_target || null,
                 empfaenger: mailData.empfaenger || null,
+                pms_ambiguous: prefetchedPmsData?.ambiguous || false,
+                pms_ambiguity_reason: prefetchedPmsData?.ambiguityReason || null,
                 queued_at: queuedAt,
             } as any,
         });
@@ -595,6 +605,23 @@ async function processOutbound() {
                 }
 
                 const hotel = resolveHotel(logs);
+
+                // Letzter Halt vor dem Gast: geht der Entwurf mit einer Platzhalter-Signatur
+                // raus, steht in der Mail eine erfundene Anschrift ("Musterstraße 1 ·
+                // 44000 Musterstadt") und die Pflichtangaben sind unvollständig. Das darf
+                // nicht passieren — die Mail wird angehalten statt versendet, mit einem
+                // Hinweis, der genau sagt, was zu tun ist.
+                if (hasPlaceholder((mail as any).draft_reply)) {
+                    console.error(`⛔ ${mail.mail_id}: Entwurf enthält Signatur-Platzhalter — Versand angehalten. Bitte echte Hoteldaten unter /settings eintragen.`);
+                    await supabase.from("emails").update({
+                        status: "failed",
+                        agent_logs: {
+                            ...logs,
+                            pipeline_errors: ["Versand angehalten: Die Signatur enthält noch Platzhalter (z. B. \"Musterstraße 1\"). Bitte im Dashboard unter /settings die echten Hoteldaten eintragen und die Mail danach neu prüfen."],
+                        },
+                    }).eq("id", mail.id).eq("status", "approved");
+                    continue;
+                }
 
                 // ─── Schritt 1: E-Mail senden ───────────────────────────────────────
                 // Der Versand kommt VOR der Mutation. Vorher war es umgekehrt, und weil

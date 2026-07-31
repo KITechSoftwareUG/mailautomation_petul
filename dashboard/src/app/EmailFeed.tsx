@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
     ArrowRight, Minimize2, Layers, CheckCircle2, Terminal, BrainCircuit, PenTool,
     Database, MessageSquare, Copy, Check, ChevronRight, Sparkles, RefreshCw,
-    XCircle, Clock, Send, AlertTriangle, Loader2, Maximize2, X, Settings
+    XCircle, Clock, Send, AlertTriangle, Loader2, Maximize2, X, Settings, LogOut
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -17,6 +17,7 @@ import {
     forceProcess as forceProcessAction,
     approveOrRejectMail,
 } from "./emails/actions";
+import { logout } from "./auth/actions";
 import { DONE_STATUSES } from "./emails/constants";
 
 type Email = {
@@ -68,7 +69,9 @@ function StatusDot({ status }: { status?: string }) {
         queued:     { color: "#6082B6", label: "Läuft",      pulse: true },
         processing: { color: "#F39200", label: "Wartet",     pulse: true },
         approved:   { color: "#009697", label: "Genehmigt",  pulse: true },
+        sending:    { color: "#009697", label: "Sendet",     pulse: true },
         sent:       { color: "#22c55e", label: "Gesendet" },
+        send_failed:{ color: "#E2001A", label: "Unzustellbar" },
         rejected:   { color: "#E2001A", label: "Abgelehnt" },
         ignored:    { color: "#aaa",    label: "Ignoriert" },
         failed:     { color: "#E2001A", label: "Fehler" },
@@ -617,13 +620,22 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                         <h1 className="text-[16px] font-serif tracking-widest leading-none mb-0.5 uppercase">Apart Hotels</h1>
                                         <span className="text-[14px] font-light italic lowercase opacity-70" style={{ fontFamily: "serif" }}>petul</span>
                                     </div>
-                                    <button
-                                        onClick={() => router.push("/settings")}
-                                        title="Einstellungen"
-                                        className="text-white/30 hover:text-white transition-colors mt-1"
-                                    >
-                                        <Settings className="w-4 h-4" />
-                                    </button>
+                                    <div className="flex items-center gap-2.5 mt-1">
+                                        <button
+                                            onClick={() => router.push("/settings")}
+                                            title="Einstellungen"
+                                            className="text-white/30 hover:text-white transition-colors"
+                                        >
+                                            <Settings className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={() => logout()}
+                                            title="Abmelden"
+                                            className="text-white/30 hover:text-white transition-colors"
+                                        >
+                                            <LogOut className="w-4 h-4" />
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="flex h-[3px] w-full mb-3 overflow-hidden">
                                     <div className="flex-1 bg-[#E2001A]" />
@@ -920,6 +932,21 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         className="flex-1 w-full px-10 py-8 bg-white text-black resize-none outline-none font-sans text-[15px] lg:text-[16px] font-medium leading-relaxed tracking-wide selection:bg-[#6082B6] selection:text-white disabled:cursor-default custom-scrollbar border-0"
                                                     />
                                                 </motion.div>
+                                            )}
+
+                                            {/* Mehrere Buchungen auf dieselbe Adresse (typisch: Firmenbuchung,
+                                                bei der alle Zimmer auf buchung@firma.de laufen). Der Entwurf
+                                                kann dann die Daten eines anderen Gastes enthalten. */}
+                                            {currentMail.status === "processing" && currentMail.agent_logs?.pms_ambiguous && (
+                                                <div className="shrink-0 mx-8 mt-3 px-4 py-3 border-l-4 border-[#F39200] bg-[#F39200]/10">
+                                                    <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-[#F39200]">
+                                                        <AlertTriangle className="w-3 h-3" />
+                                                        Zuordnung unsicher
+                                                    </div>
+                                                    <div className="mt-1 text-[11px] leading-relaxed text-black/60">
+                                                        {currentMail.agent_logs.pms_ambiguity_reason}
+                                                    </div>
+                                                </div>
                                             )}
 
                                             {/* Empfänger + Anhang-Hinweis: beides entscheidet darüber, ob der

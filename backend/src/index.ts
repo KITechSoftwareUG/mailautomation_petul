@@ -174,11 +174,17 @@ async function writeResultIfCurrent(mailId: string, expectedQueuedAt: string | n
     return true;
 }
 
-// Begrenzt, wie viele Pipelines gleichzeitig laufen. pipelineInProgress dedupliziert
-// nur dieselbe mail_id — bei 40 gleichzeitig zugestellten Mails starteten bisher 40
-// Pipelines mit je 3 LLM-Calls parallel. Ergebnis: OpenAI-Rate-Limit, alle 40 landen
-// auf "failed". Überzählige Mails bleiben einfach "queued", der Poller zieht sie nach.
-const MAX_CONCURRENT_PIPELINES = 3;
+// Genau EINE Mail zur Zeit. Die Agenten laufen damit strikt nacheinander:
+// Mail für Mail, und innerhalb einer Mail Intent → Policy → Action.
+//
+// pipelineInProgress dedupliziert nur dieselbe mail_id — ohne diese zusätzliche
+// Grenze starteten bei 40 gleichzeitig zugestellten Mails 40 Pipelines mit je 3
+// LLM-Calls parallel, liefen ins OpenAI-Rate-Limit und landeten allesamt auf
+// "failed". Überzählige Mails bleiben schlicht "queued"; der Poller zieht sie
+// wenige Sekunden später nach. Für den Anwendungsfall (eine Rezeptionistin,
+// wenige Mails pro Stunde) ist Durchsatz ohnehin irrelevant — Nachvollziehbarkeit
+// und ein ruhiges, sequentielles Log sind wertvoller.
+const MAX_CONCURRENT_PIPELINES = 1;
 const MAX_PIPELINE_ATTEMPTS = 3;
 let activePipelines = 0;
 
@@ -1057,6 +1063,16 @@ async function drainInbox(client: ImapFlow) {
             { seen: false, since: PROCESS_MAILS_SINCE },
             { uid: true }
         );
+
+        // Ein erfolgreich beantworteter SEARCH ist der Beweis, dass die Verbindung lebt —
+        // unabhängig davon, ob Mails da sind. Genau das muss der Watchdog messen.
+        // Zählte er nur verarbeitete Mails (wie zuvor), wäre eine ruhige Nacht ohne
+        // Posteingang von einer toten Verbindung ununterscheidbar gewesen: der Watchdog
+        // hätte den gesunden Prozess nach 30 stillen Minuten beendet. Dass das bisher
+        // nicht passiert ist, lag nur daran, dass sein eigener 20-Minuten-Scan den Timer
+        // zurücksetzte — ein Zufall, kein Schutz.
+        lastImapActivity = Date.now();
+
         if (!uids || uids.length === 0) return;
 
         console.log(`\n✨ ${uids.length} ungelesene Mail(s) im Postfach — verarbeite...`);
@@ -1147,6 +1163,9 @@ async function startListener(attempt = 0) {
 // PM2 "online" meldete und die Poller weiterliefen — nur der Mailempfang war tot.
 // Hier wird aktiv geprüft, ob der Listener überhaupt noch etwas tut.
 
+// Der 2-Minuten-Scan hält lastImapActivity im Normalbetrieb permanent frisch. Diese
+// Schwellen greifen deshalb erst, wenn der Scan selbst nicht mehr durchkommt — also
+// wenn die Verbindung tatsächlich tot ist, nicht wenn nur keine Post kommt.
 const IMAP_STALE_MS = 15 * 60 * 1000;
 const IMAP_DEAD_MS = 30 * 60 * 1000;
 
@@ -1159,10 +1178,9 @@ async function imapWatchdog() {
     }
 
     if (idleFor > IMAP_STALE_MS) {
-        console.warn(`🩺 Watchdog: seit ${Math.round(idleFor / 60000)} Min still — erzwinge Scan zur Lebendprüfung.`);
+        console.warn(`🩺 Watchdog: seit ${Math.round(idleFor / 60000)} Min keine Antwort vom Postfach — erzwinge Scan zur Lebendprüfung.`);
         try {
             await drainInbox(imapClient);
-            lastImapActivity = Date.now();
         } catch (err: any) {
             console.error(`❌ Watchdog-Scan fehlgeschlagen: ${err?.message || err} — erzwinge Reconnect.`);
             try { imapClient.close(); } catch { /* Verbindung ist ohnehin hin */ }

@@ -12,25 +12,40 @@ Eine Rezeptionistin prüft und genehmigt den Entwurf im Dashboard — dann wird 
 
 ```
 IMAP-Listener (imapflow)
-       ↓ neue Mail
+       ↓ UNSEEN-Scan des Postfachs — NICHT das "exists"-Event allein
+       ↓ (drainInbox(): bei jedem Connect, bei jedem exists, alle 2 Min)
 Supabase (emails-Tabelle, status: "new")
-       ↓ SOFORT automatisch (kein Dashboard-Klick nötig, seit Commit 0d64d15)
+       ↓ SOFORT automatisch (kein Dashboard-Klick nötig)
 Status: "queued"
-       ↓ runAiPipeline() wird direkt aufgerufen; watchNewMails-Poller (5s) ist
-       ↓ das Sicherheitsnetz für alles, was zusätzlich auf "queued" gesetzt wird
-       ↓ (Dashboard-Klicks wie "Neu prüfen"/"Trotzdem bearbeiten"/Hotel ändern,
-       ↓ oder ein Prozess-Neustart mitten in einem Lauf)
+       ↓ runAiPipeline(); watchNewMails-Poller (5s) ist das Sicherheitsnetz
+       ↓ MAX_CONCURRENT_PIPELINES = 1 — die Agenten laufen strikt nacheinander,
+       ↓ eine Mail nach der anderen. Überzählige bleiben "queued".
 3-Agenten-KI-Pipeline (gpt-4o-mini, AI SDK generateObject):
   1. Intent Agent  → Klassifizierung der Mail
   2. Policy Agent  → Richtlinienprüfung (Türcodes, Stornierung, etc.)
   3. Action Agent  → Antwortentwurf + geplante PMS-Aktion
-       ↓
+       ↓ Signatur wird HIER angehängt (nicht erst beim Versand) —
+       ↓ die Rezeptionistin sieht exakt den Text, der rausgeht
 Supabase (status: "processing", draft_reply gesetzt)
        ↓ Rezeptionistin bestätigt im Dashboard
 Status: "approved"
        ↓ processOutbound-Poller (alle 10s)
-SMTP: Mail wird gesendet (status: "sent")
+Status: "sending"  ← Zwischenstatus, überlebt Prozessabbruch
+       ↓ 1. SMTP-Versand   2. DANN die PMS-Mutation (genau einmal)
+Status: "sent"
 ```
+
+**Warum der UNSEEN-Scan:** Der frühere Ansatz („exists"-Event → `fetch(data.count)`)
+hatte drei belegte Fehler: der Fetch lief außerhalb des Mailbox-Locks, wodurch IDLE
+nicht neu armierte und die Verbindung **exakt 5:00 Min nach jeder Mail** abbrach
+(12 von 12 Mal im Log); es wurde nur die höchste Sequenznummer geholt, wodurch bei
+gleichzeitig eintreffenden Mails alle bis auf eine verloren gingen (belegt: Index
+752 → 753 → **755**); und es gab keinen Nachhol-Scan beim Verbindungsaufbau.
+
+**Warum der Versand vor der Mutation kommt:** Vorher lief die Mutation zuerst, und der
+Fehlerpfad setzte den Status auf „approved" zurück — bei jedem Sendefehler wurde die
+PMS-Mutation also erneut ausgeführt. `bookExtraService` erzeugt per `REC-${Date.now()}`
+jedes Mal einen neuen Beleg auf der Gastrechnung.
 
 Jede Mail, die > 30 Tage in `new`/`processing`/`failed` hängt (nie angeschaut, nie freigegeben,
 nie erneut versucht), wird automatisch auf `status: "archived"` gesetzt (`archiveStaleMails()`
@@ -83,11 +98,26 @@ Dashboard (Next.js): Kein eigener Restart nötig — Vercel deployt automatisch 
 ## E-Mail-Status-Fluss
 
 ```
-new → queued → [KI-Pipeline] → processing → approved → sent
-                             ↘ ignored   (Spam / Portal-Benachrichtigung / System-Benachrichtigung)
-                             ↘ failed    (3RPMS-API-Fehler, unerwarteter Pipeline-Fehler etc.)
-new/processing/failed → archived (automatisch nach 30 Tagen ohne Aktion, s.o.)
+new → queued → [KI-Pipeline] → processing → approved → sending → sent
+                             ↘ ignored     (Spam / Portal / System-Benachrichtigung)
+                             ↘ failed      (fachlicher Fehler, z.B. Reservierung nicht gefunden)
+                             ↺ queued      (transienter Fehler: Netz/Timeout/Rate-Limit, max. 3 Versuche)
+                                          approved → send_failed (nach 5 Sendeversuchen)
+new/queued/processing/failed/send_failed → archived (automatisch nach 30 Tagen ohne Aktion)
 ```
+
+**`sending`** ist ein Zwischenstatus, der einen Prozessabbruch überlebt: `recoverStuckSending()`
+(alle 5 Min) holt Mails zurück, die zwischen Claim und Versand hängen blieben. War der Versand
+bereits erfolgreich (`agent_logs.mail_sent_at` gesetzt) und nur das Status-Update scheiterte,
+wird auf `sent` korrigiert statt erneut gesendet — sonst bekäme der Gast die Mail zweimal.
+
+**`send_failed`** = nach 5 Versuchen endgültig unzustellbar. Erscheint in der aktiven
+Dashboard-Liste und braucht manuelle Nacharbeit.
+
+**Transient vs. fachlich:** Ein 3RPMS-Ausfall parkte früher jede in dieser Zeit eintreffende
+Mail dauerhaft auf `failed`, wo sie nie wieder jemand anfasste. Jetzt bleiben Netzwerk-,
+Timeout- und Rate-Limit-Fehler auf `queued` und werden erneut versucht (max. 3 Mal);
+nur fachliche Fehler („Reservierung nicht gefunden") landen auf `failed`.
 
 - `new`: Mail eingetroffen — wird vom IMAP-Listener sofort automatisch auf `queued` gesetzt
   (kein Dashboard-Klick mehr nötig). Bleibt nur "new" hängen, wenn dieser Schritt fehlschlägt.
@@ -294,6 +324,10 @@ rotiert worden sein (Settings → API); falls nicht, dringend nachholen.
 
 | Problem | Wahrscheinlichste Ursache | Lösung |
 |---|---|---|
+| **Keine Mail wird versendet, freigegebene Entwürfe landen auf `failed`** | ⚠️ **Go-Live-Blocker, Stand 31.07.2026:** Alle sechs Zeilen in `hotel_signatures` enthalten noch die Seed-Platzhalter (`Musterstraße 1 · 44000 Musterstadt`, `[Name]`, `HRB [Nummer]`). `hasPlaceholder()` (`backend/src/utils/signatures.ts`) hält den Versand deshalb **absichtlich** an — sonst ginge an jeden Gast eine erfundene Anschrift mit unvollständigen Pflichtangaben (§5 TMG / §35a GmbHG). | Dashboard → `/settings` → für **alle** Hotels **und** `DEFAULT` die echten Daten eintragen. Danach betroffene Mails mit „Neu prüfen" erneut anstoßen. Log-Zeile: `⛔ … Entwurf enthält Signatur-Platzhalter — Versand angehalten.` |
+| **Mailempfang tot, aber `pm2 list` zeigt "online"** | War bis 28.07.2026 das größte Risiko: ein einziger gescheiterter Reconnect legte den Empfang dauerhaft still — belegt vom 21.–28.07.2026, sieben Tage, bei durchgehend grünem PM2. Zusätzlich brach die Verbindung nach **jeder** Mail exakt 5:00 Min später ab. Beides behoben (UNSEEN-Scan im Lock, Reconnect mit Backoff + `.catch()`, Handler vor `connect()`, Watchdog). | Seit 28.07. drei Tage ohne einen einzigen Abbruch. Prüfen mit `grep Heartbeat logs/out.log \| tail -3` — meldet alle 5 Min den Verbindungszustand. Bei „GETRENNT" beendet sich der Prozess nach 30 Min selbst, PM2 startet neu. |
+| Antwort auf eine Booking.com-/Airbnb-Nachricht kommt beim Gast nie an | Bis 28.07. ging jede Antwort an `From:` — bei Portalmails ist das `noreply@…`. `Reply-To` wurde nirgends gelesen, die Mail galt trotzdem als `sent`. | Behoben: `reply_to` wird beim Empfang mitgespeichert und im Versand bevorzugt. Das Dashboard zeigt über dem Entwurf „Antwort geht an: …" inkl. Kennzeichnung „via Reply-To". |
+| Entwurf nennt Zimmer/Datum/Preis einer fremden Buchung | Mehrere Aufenthalte auf dieselbe E-Mail-Adresse (typisch: Firmenbuchung auf `buchung@firma.de`). Die 3RPMS-Query liefert unsortiert, `roomStays[0]` war ein beliebiger Treffer. | Behoben: Sortierung nach Anreisedatum + `pms_ambiguous`-Kennzeichnung. Das Dashboard zeigt dann „Zuordnung unsicher" mit Begründung. Bei mehr als 50 kommenden Aufenthalten meldet die Suche jetzt einen Fehler statt „Gast nicht gefunden". |
 | **Backend tut nichts, alle Mails bleiben liegen, `pm2 logs` voller Fehler** | Supabase-Egress-Kontingent überschritten (`exceed_egress_quota`) — Supabase blockiert dann das GESAMTE Projekt, jeder DB-Zugriff (`watchNewMails`, `processOutbound`, `archiveStaleMails`) schlägt fehl. Kein Code-Bug: 3RPMS läuft parallel weiter (Settings laden beim PM2-Start normal). Trat am 14.07.2026 auf, **seit 31.07.2026 wieder normal** (Backend verarbeitet Mails, PostgREST antwortet mit 200). | **Prüfen:** `pm2 logs petul-mail-automation --lines 20` — Text `exceed_egress_quota` = blockiert. **Fix (nur der Projekt-Owner):** Supabase-Dashboard (Projekt `uxqcpmnanjfyztyhsdsi`) → Settings → Billing → Plan upgraden oder Spend-Cap entfernen. |
 | Nach einem Passwortwechsel sind alle Rezeptionistinnen ausgeloggt | Kein Fehler — der Wechsel widerruft absichtlich jede bestehende Session (s. Sicherheitsarchitektur) | Neues Passwort im Team weitergeben; einmal neu anmelden genügt |
 | Passwortwechsel meldet "Die Tabelle dashboard_auth fehlt" | `backend/supabase_migration_dashboard_auth.sql` wurde noch nicht im Supabase SQL-Editor ausgeführt | Migration ausführen. Bis dahin läuft der Login unverändert über `DASHBOARD_PASSWORD` weiter |

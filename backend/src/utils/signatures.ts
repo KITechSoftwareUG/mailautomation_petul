@@ -18,7 +18,13 @@ Petul Hotels GmbH
 // §5 TMG / §35a GmbHG wären unvollständig. Die Prüfung ist bewusst großzügig — ein
 // falscher Alarm kostet einen Blick ins Dashboard, ein übersehener Platzhalter geht
 // an echte Gäste.
-const PLACEHOLDER_PATTERN = /Musterstra|Musterstadt|\[Name\]|\[Nummer\]|\[Telefon\]|\[E-?Mail\]|44000|XXX|TODO/i;
+//
+// Der eckige-Klammern-Ausdruck steht bewusst generisch statt als Liste bekannter
+// Marker: eine Signatur mit "[Vornamen ergänzen]" hätte die frühere Aufzählung
+// (\[Name\], \[Nummer\], …) glatt passiert und wäre trotz unvollständiger
+// Geschäftsführerangabe an Gäste gegangen. In einer Hotelsignatur hat ein Wort in
+// eckigen Klammern keinen legitimen Zweck.
+const PLACEHOLDER_PATTERN = /Musterstra|Musterstadt|\[[^\]\n]{2,40}\]|44000|XXX|TODO/i;
 
 export function hasPlaceholder(signature: string | null | undefined): boolean {
     return PLACEHOLDER_PATTERN.test(signature || "");

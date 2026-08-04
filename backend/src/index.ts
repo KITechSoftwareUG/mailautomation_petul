@@ -24,6 +24,7 @@ import {
     query3RPMS,
     getReservationByCode,
     searchReservationsByEmail,
+    findHotelByGuestEmail,
     getInventory,
     getHotelSettings,
 } from "./utils/threerpms";
@@ -280,18 +281,37 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
         const forcedHotel = mailData.ai_force_hotel
             ? HOTELS.find(h => h.name === mailData.ai_force_hotel) || null
             : null;
-        const hotel = forcedHotel || identifyHotel(
+        let hotel = forcedHotel || identifyHotel(
             mailData.empfaenger,
             mailData.forward_target,
             intentData.extracted_entities.hotel_identifiziert
         );
-        const hotelApiKey = hotel?.key || "";
-        const resolvedHotel = hotel?.name || "Unbekannt / Petul";
-        const hotelSource = forcedHotel
+        let hotelSource = forcedHotel
             ? "manuell (Dashboard)"
             : hotel
                 ? (mailData.forward_target && hotel.email && mailData.forward_target.toLowerCase().includes(hotel.email) ? "email-header" : "ai-oder-keyword")
                 : "unbekannt";
+
+        // Letzter Ausweg, wenn keiner der bisherigen Wege ein Haus ergibt: Der weitaus
+        // häufigste Fall ist eine Mail an die Sammeladresse info@petul.de, die kein Haus
+        // nennt — weder im Header (die Weiterleitung verwirft ihn) noch im Text. Ist der
+        // Absender aber in genau einem der fünf Häuser als Gast hinterlegt, ist die
+        // Zuordnung damit eindeutig belegt statt geraten.
+        // Die dabei gefundenen PMS-Daten werden unten weiterverwendet, statt dieselbe
+        // Suche gleich noch einmal auszuführen.
+        let crossHotelPms: any = null;
+        if (!hotel && mailData.absender) {
+            const crossHit = await findHotelByGuestEmail(mailData.absender);
+            if (crossHit) {
+                hotel = crossHit.hotel;
+                crossHotelPms = crossHit.data;
+                hotelSource = "pms-gasttreffer";
+                console.log(`   ✅ Hotel über Gastdaten im 3RPMS bestimmt: ${hotel.name}`);
+            }
+        }
+
+        const hotelApiKey = hotel?.key || "";
+        const resolvedHotel = hotel?.name || "Unbekannt / Petul";
         console.log(`   → Hotel: ${resolvedHotel} (Quelle: ${hotelSource})`);
 
         // 4. Policy + 3RPMS-Lookup parallel — spart ~3-5s
@@ -318,6 +338,13 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                         return { attempted: true, data: null, error: err.message };
                     }
                 }
+                // Die hotelübergreifende Suche oben hat den Gast bereits gefunden — und
+                // zwar im selben Haus, das jetzt gilt (es wurde ja gerade daraus abgeleitet).
+                if (crossHotelPms) {
+                    console.log(`   ✅ Gast per E-Mail gefunden (${resolvedHotel}, hausübergreifende Suche)`);
+                    return { attempted: true, data: crossHotelPms };
+                }
+
                 // Kein Code → früh gestarteten E-Mail-Lookup verwenden. ABER nur, wenn er
                 // gegen dasselbe Hotel lief, das jetzt tatsächlich gilt.
                 //

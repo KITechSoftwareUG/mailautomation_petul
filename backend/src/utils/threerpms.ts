@@ -229,91 +229,271 @@ export async function getReservationByCode(apiKey: string, code: string) {
   return query3RPMS<any>(apiKey, query, { code });
 }
 
-/**
- * Reservierungen anhand Gast-E-Mail-Adresse suchen.
- * Strategie: room_stays ab heute laden, clientseitig nach first_guest.email filtern.
- * Hinweis: ClientFilter unterstützt kein email-Feld (nur id/birthday/not/or).
- */
-export async function searchReservationsByEmail(apiKey: string, email: string) {
-  const today = new Date().toISOString().split("T")[0];
+// 3RPMS lehnt jedes `first` über 100 ab ("First darf nicht größer als 100 sein."),
+// liefert aber pageInfo.hasNextPage/endCursor — geblättert wird also, statt die Liste
+// stillschweigend abzuschneiden.
+const ROOM_STAY_PAGE_SIZE = 100;
 
-  const staysQuery = `
-    query GetRoomStaysByDate($filter: RoomStayFilter) {
-      room_stays(filter: $filter, first: 50) {
+// Notbremse gegen eine endlose Cursor-Schleife bei einem fehlerhaften hasNextPage.
+// 3000 Aufenthalte liegen weit über dem, was eines der Häuser in 180 Tagen erzeugt
+// (Messung 04.08.2026: größtes Haus 751), sind also nie im Normalbetrieb erreichbar.
+const ROOM_STAY_MAX_PAGES = 30;
+
+// Rückblickfenster der Gastsuche. Nur kommende Aufenthalte zu durchsuchen macht jede
+// Rechnungs- oder Nachfrage zu einem bereits beendeten Aufenthalt unauffindbar — der
+// Gast ist abgereist, seine Buchung fällt aus dem Filter, und die Pipeline meldete
+// "Kein Gast gefunden" (belegt u.a. an "Rechnung zu Reservierung vom 21.07.–22.07.").
+const ROOM_STAY_LOOKBACK_DAYS = 180;
+
+const ROOM_STAY_FIELDS = `
+  id
+  reservation_from
+  reservation_to
+  roomName
+  gross
+  check_in
+  check_out
+  mealNotes
+  guestMessage
+  rateCode
+  first_guest {
+    id
+    firstname
+    lastname
+    email
+    telephone
+    mobile
+  }
+  category { id name }
+  reservation { id code status }
+`;
+
+// Für den reinen "kennt dieses Haus den Gast?"-Scan reicht die Mailadresse. Der volle
+// Feldsatz über alle fünf Häuser wären rund 2 MB pro Mail — und damit der Grund, warum
+// eine parallele Suche über alle Häuser in den 15-Sekunden-Timeout lief.
+const ROOM_STAY_EMAIL_ONLY_FIELDS = `
+  id
+  first_guest { email }
+`;
+
+// Blättern heißt: aus einer Anfrage pro Gastsuche werden bis zu acht, und bei der
+// hausübergreifenden Suche bis zu vierzig. 3RPMS sperrt die aufrufende IP auf
+// TCP-Ebene, wenn zu viele Anfragen in kurzer Folge eintreffen (am 04.08.2026 bei
+// einem Testlauf ausgelöst und verifiziert: ICMP antwortete weiter, Port 443 nicht
+// mehr). Die Aufenthaltsliste eines Hauses ändert sich im Minutentakt praktisch nie,
+// die gesuchten Buchungen sind Tage bis Wochen alt — ein kurzer Zwischenspeicher
+// kostet also keine Aktualität und nimmt die Last vollständig heraus, sobald mehrere
+// Mails hintereinander laufen (der Normalfall bei sequenzieller Verarbeitung).
+const ROOM_STAY_CACHE_TTL_MS = 120_000;
+
+const roomStayCache = new Map<string, { at: number; value: { stays: any[]; truncated: boolean; pages: number } }>();
+
+function pruneRoomStayCache(now: number) {
+  for (const [key, entry] of roomStayCache) {
+    if (now - entry.at >= ROOM_STAY_CACHE_TTL_MS) roomStayCache.delete(key);
+  }
+}
+
+/**
+ * Alle room_stays zu einem Filter laden — über alle Seiten hinweg.
+ * `truncated` meldet, ob die Sicherheitsgrenze griff, die Liste also unvollständig ist.
+ */
+async function fetchAllRoomStays(
+  apiKey: string,
+  filter: any,
+  fields: string = ROOM_STAY_FIELDS,
+): Promise<{ stays: any[]; truncated: boolean; pages: number }> {
+  const now = Date.now();
+  // Der Schlüssel enthält den API-Key, weil er das Haus bestimmt — ein Cache-Treffer
+  // aus einem anderen Haus wäre eine falsche Gastauskunft.
+  const cacheKey = `${apiKey}|${fields}|${JSON.stringify(filter)}`;
+  const cached = roomStayCache.get(cacheKey);
+  if (cached && now - cached.at < ROOM_STAY_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  pruneRoomStayCache(now);
+  const query = `
+    query GetRoomStaysPaged($filter: RoomStayFilter, $first: Int!, $after: String) {
+      room_stays(filter: $filter, first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
         edges {
-          node {
-            id
-            reservation_from
-            reservation_to
-            roomName
-            gross
-            check_in
-            check_out
-            mealNotes
-            guestMessage
-            rateCode
-            first_guest {
-              id
-              firstname
-              lastname
-              email
-              telephone
-              mobile
-            }
-            category { id name }
-            reservation { id code status }
-          }
+          node {${fields}}
         }
       }
     }
   `;
 
-  const staysResult = await query3RPMS<any>(apiKey, staysQuery, {
-    filter: { reservation_to: { ge: today } },
+  const stays: any[] = [];
+  let after: string | null = null;
+  let pages = 0;
+
+  const finish = (truncated: boolean) => {
+    const value = { stays, truncated, pages };
+    roomStayCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  };
+
+  while (pages < ROOM_STAY_MAX_PAGES) {
+    const result: any = await query3RPMS<any>(apiKey, query, {
+      filter,
+      first: ROOM_STAY_PAGE_SIZE,
+      after,
+    });
+    const connection = result?.room_stays;
+    const edges = connection?.edges || [];
+    stays.push(...edges.map((e: any) => e.node));
+    pages++;
+
+    if (!connection?.pageInfo?.hasNextPage) {
+      return finish(false);
+    }
+    // Ohne Cursor-Fortschritt liefe die Schleife auf derselben Seite weiter.
+    const nextCursor = connection.pageInfo.endCursor;
+    if (!nextCursor || nextCursor === after) {
+      return finish(false);
+    }
+    after = nextCursor;
+  }
+
+  return finish(true);
+}
+
+/**
+ * Reservierungen anhand Gast-E-Mail-Adresse suchen.
+ * Strategie: room_stays im Zeitfenster laden (geblättert), clientseitig nach
+ * first_guest.email filtern.
+ * Hinweis: ClientFilter unterstützt kein email-Feld (nur id/birthday/not/or).
+ */
+export async function searchReservationsByEmail(apiKey: string, email: string) {
+  const today = new Date().toISOString().split("T")[0];
+  const lookbackFrom = new Date(Date.now() - ROOM_STAY_LOOKBACK_DAYS * 86400_000)
+    .toISOString()
+    .split("T")[0];
+
+  const { stays: allStays, truncated } = await fetchAllRoomStays(apiKey, {
+    reservation_to: { ge: lookbackFrom },
   });
 
-  const allStays = staysResult?.room_stays?.edges?.map((e: any) => e.node) || [];
   const roomStays = allStays.filter((s: any) =>
     s.first_guest?.email?.toLowerCase() === email.toLowerCase()
   );
 
   if (roomStays.length === 0) {
-    // Wichtige Unterscheidung: "nicht gefunden" ist nur dann verlässlich, wenn der
-    // Suchraum überhaupt vollständig war. Bei exakt 50 zurückgelieferten Aufenthalten
-    // ist die Liste am Limit abgeschnitten — der Gast kann sehr wohl existieren und
-    // nur außerhalb der ersten 50 liegen. Ein Haus mit mehr als 50 kommenden
-    // Aufenthalten hätte sonst dauerhaft "Gast nicht gefunden" gemeldet.
-    if (allStays.length >= 50) {
+    // "Nicht gefunden" ist nur verlässlich, wenn der Suchraum vollständig war. Wurde
+    // die Blätterung von der Sicherheitsgrenze gestoppt, kann der Gast dahinter liegen
+    // — dann ist ein ehrlicher Fehler richtiger als ein falsches "gibt es nicht".
+    if (truncated) {
       throw new Error(
-        "Gastsuche unvollständig: Das Hotel hat mehr als 50 kommende Aufenthalte, " +
-        "die Suche deckt nicht den gesamten Zeitraum ab. Bitte manuell im 3RPMS prüfen."
+        `Gastsuche unvollständig: Das Hotel hat mehr als ${ROOM_STAY_PAGE_SIZE * ROOM_STAY_MAX_PAGES} ` +
+        "Aufenthalte im Suchzeitraum, die Suche wurde abgebrochen. Bitte manuell im 3RPMS prüfen."
       );
     }
     return null;
   }
 
-  // Frühester Aufenthalt zuerst — die 3RPMS-Query liefert unsortiert, wodurch
-  // roomStays[0] (das, was das Dashboard anzeigt) bisher ein beliebiger Treffer war.
-  // Bei einem Gast mit zwei Buchungen konnten Panel und Entwurf verschiedene
-  // Aufenthalte meinen.
-  roomStays.sort((a: any, b: any) => String(a.reservation_from || "").localeCompare(String(b.reservation_from || "")));
+  // Die 3RPMS-Query liefert unsortiert, wodurch roomStays[0] — das, was das Dashboard
+  // anzeigt und was der Action Agent zuerst liest — ein beliebiger Treffer war.
+  // Reihenfolge jetzt: laufende und kommende Aufenthalte zuerst (der nächstliegende
+  // vorn), erst danach die bereits beendeten (der jüngste vorn). Ohne diese Trennung
+  // stünde nach Einführung des Rückblickfensters ein ein halbes Jahr alter Aufenthalt
+  // vor der Buchung, um die es gerade geht.
+  const isCurrent = (s: any) => String(s.reservation_to || "") >= today;
+  roomStays.sort((a: any, b: any) => {
+    const aCurrent = isCurrent(a), bCurrent = isCurrent(b);
+    if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
+    const af = String(a.reservation_from || ""), bf = String(b.reservation_from || "");
+    return aCurrent ? af.localeCompare(bf) : bf.localeCompare(af);
+  });
 
   // Mehrere Treffer auf dieselbe Adresse: typisch bei Firmenbuchungen, wo alle Zimmer
   // auf buchung@firma.de laufen. Ohne diesen Hinweis nannte der Entwurf Zimmer, Datum
   // und Preis irgendeiner dieser Buchungen — also womöglich die eines Kollegen.
+  // Gezählt wird nur innerhalb der aktuellen Gruppe: ein abgeschlossener Aufenthalt
+  // neben einer kommenden Buchung ist keine Mehrdeutigkeit, sondern schlicht Historie.
+  const currentStays = roomStays.filter(isCurrent);
+  const relevantStays = currentStays.length > 0 ? currentStays : roomStays;
   const distinctGuests = new Set(
-    roomStays.map((s: any) => `${s.first_guest?.firstname || ""} ${s.first_guest?.lastname || ""}`.trim().toLowerCase())
+    relevantStays.map((s: any) => `${s.first_guest?.firstname || ""} ${s.first_guest?.lastname || ""}`.trim().toLowerCase())
   );
+  const ambiguous = relevantStays.length > 1;
 
   return {
     client: roomStays[0]?.first_guest,
     reservations: [],
     roomStays,
-    ambiguous: roomStays.length > 1,
-    ambiguityReason: roomStays.length > 1
-      ? `${roomStays.length} Aufenthalte auf diese E-Mail-Adresse${distinctGuests.size > 1 ? ` (${distinctGuests.size} verschiedene Namen — vermutlich Firmenbuchung)` : ""}. Zuordnung bitte manuell prüfen.`
+    pastStayCount: roomStays.length - currentStays.length,
+    ambiguous,
+    ambiguityReason: ambiguous
+      ? `${relevantStays.length} ${currentStays.length > 0 ? "aktuelle bzw. kommende " : "vergangene "}Aufenthalte auf diese E-Mail-Adresse${distinctGuests.size > 1 ? ` (${distinctGuests.size} verschiedene Namen — vermutlich Firmenbuchung)` : ""}. Zuordnung bitte manuell prüfen.`
       : null,
   };
+}
+
+export type GuestHotelMatch = {
+  hotel: typeof HOTELS[number];
+  data: NonNullable<Awaited<ReturnType<typeof searchReservationsByEmail>>>;
+};
+
+/**
+ * Gast-E-Mail in ALLEN Häusern suchen — Notnagel für Mails an die Sammeladresse
+ * info@petul.de, bei denen weder Header noch Text ein Haus nennen.
+ *
+ * Ergebnis nur, wenn genau EIN Haus den Gast kennt UND alle fünf Häuser fehlerfrei
+ * durchsucht wurden. Zwei Häuser mit demselben Gast heißt: nicht entscheidbar — dann
+ * lieber gar keine PMS-Daten als die des falschen Hauses (der Entwurf nennt sonst
+ * Zimmer und Preis einer fremden Buchung). Genauso bei einem Suchfehler: hätte das
+ * übersprungene Haus ebenfalls einen Treffer gehabt, wäre die Zuordnung falsch, sähe
+ * aber eindeutig aus.
+ *
+ * Läuft bewusst sequenziell und mit schlankem Feldsatz: parallel über fünf Häuser
+ * waren es bis zu 40 gleichzeitige Anfragen mit ~2 MB Nutzlast, die reproduzierbar in
+ * den 15-Sekunden-Timeout liefen — die Suche meldete dann "kein Treffer", obwohl der
+ * Gast existierte.
+ */
+export async function findHotelByGuestEmail(email: string): Promise<GuestHotelMatch | null> {
+  if (!email) return null;
+  const needle = email.toLowerCase();
+  const lookbackFrom = new Date(Date.now() - ROOM_STAY_LOOKBACK_DAYS * 86400_000)
+    .toISOString()
+    .split("T")[0];
+
+  const matches: typeof HOTELS[number][] = [];
+
+  for (const hotel of HOTELS) {
+    if (!hotel.key) {
+      console.warn(`   ⚠️  [3RPMS] Hausübergreifende Suche: kein API-Key für ${hotel.id} — Ergebnis nicht verlässlich.`);
+      return null;
+    }
+    try {
+      const { stays, truncated } = await fetchAllRoomStays(
+        hotel.key,
+        { reservation_to: { ge: lookbackFrom } },
+        ROOM_STAY_EMAIL_ONLY_FIELDS,
+      );
+      if (truncated) {
+        console.warn(`   ⚠️  [3RPMS] Hausübergreifende Suche: ${hotel.id} unvollständig geladen — Ergebnis nicht verlässlich.`);
+        return null;
+      }
+      if (stays.some((s: any) => s.first_guest?.email?.toLowerCase() === needle)) {
+        matches.push(hotel);
+      }
+    } catch (err: any) {
+      console.warn(`   ⚠️  [3RPMS] Hausübergreifende Suche: ${hotel.id} nicht durchsuchbar (${err.message}) — Ergebnis nicht verlässlich.`);
+      return null;
+    }
+  }
+
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      console.log(`   ℹ️  Gast in ${matches.length} Häusern gefunden (${matches.map(h => h.id).join(", ")}) — nicht eindeutig zuzuordnen.`);
+    }
+    return null;
+  }
+
+  // Erst jetzt die vollen Aufenthaltsdaten holen — für genau ein Haus statt für fünf.
+  const hotel = matches[0];
+  const data = await searchReservationsByEmail(hotel.key!, email);
+  return data ? { hotel, data } : null;
 }
 
 /**

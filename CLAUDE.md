@@ -180,10 +180,22 @@ entscheidet in dieser Reihenfolge:
 2. Deterministischer E-Mail-Match gegen `X-Original-To`/`Delivered-To`-Header (`forward_target`)
 3. KI-Vermutung des Intent Agents (`extracted_entities.hotel_identifiziert`)
 4. Keyword-Suche in Empfänger-Adresse
+5. **Gasttreffer im PMS** (`findHotelByGuestEmail()`, seit 04.08.2026): Ist der Absender in genau
+   einem der fünf Häuser als Gast hinterlegt, ist die Zuordnung belegt statt geraten
+   (`hotel_source: "pms-gasttreffer"`). Läuft sequenziell mit schlankem Feldsatz und verwirft das
+   Ergebnis, sobald ein Haus nicht sauber durchsucht werden konnte — sonst sähe eine Zuordnung
+   eindeutig aus, obwohl vier Häuser ungeprüft blieben.
 
 **Wichtig:** `ai_force_hotel` muss über `watchNewMails()` aus `agent_logs` in `mailData` durchgereicht
 werden, sonst kommt die manuelle Auswahl beim Backend nie an (das war monatelang der Fall — die
 Hotel-Auswahl im Dashboard hatte keinerlei Effekt, s. Häufige Probleme unten).
+
+**Grenze der automatischen Erkennung (Messung 04.08.2026):** 32 von 51 auswertbaren Mails gehen an
+die Sammeladresse `info@petul.de`; bei 39 von 40 fehlte der `Delivered-To`-Header komplett, weil die
+Weiterleitung ihn verwirft — Weg 2 griff also genau **einmal**. Von den 23 Mails ganz ohne Haus nennt
+**keine einzige** ein Hotel-Keyword in Betreff oder Text, und nur eine ließ sich über Weg 5 auflösen
+(die übrigen 22 sind Neuanfragen ohne Buchung oder Lieferantenpost). Das ist keine Codelücke: Ohne
+Header-erhaltende Weiterleitung beim Hoster bleibt für diese Fälle nur der manuelle Selector.
 
 ---
 
@@ -245,6 +257,16 @@ Wenn Antworten auf Deutsch kommen trotz englischer Mail → beide Dateien prüfe
 - `ClientFilter` hat **kein** `email`-Feld → E-Mail-Suche geht über `rooms`-Lookup + clientseitigem Filter
 - `Company`-Typ: Feld heißt `company` (nicht `name`)
 - `ReservationFilter` hat **kein** `reservation_from`-Feld
+- **`first` darf höchstens 100 sein** („First darf nicht größer als 100 sein."), `pageInfo.hasNextPage`/
+  `endCursor` funktionieren aber — es MUSS geblättert werden. `fetchAllRoomStays()` in
+  `backend/src/utils/threerpms.ts` macht das; niemals wieder ein nacktes `first: N` für die Gastsuche.
+- **3RPMS sperrt die aufrufende IP auf TCP-Ebene**, wenn zu viele Anfragen in kurzer Folge eintreffen.
+  Am 04.08.2026 bei einem Testlauf ausgelöst und verifiziert: ICMP antwortete weiter (13 ms), Port 443
+  war dicht, Dauer ~13 Minuten, danach von selbst wieder offen. Diagnose:
+  `ping www.3rpms.de` geht, `curl https://www.3rpms.de/graphql` läuft in den Timeout → Sperre, nicht Ausfall.
+  Deshalb: Gastsuchen laufen **sequenziell**, und die Aufenthaltslisten liegen 120 s im Zwischenspeicher
+  (`ROOM_STAY_CACHE_TTL_MS`). Bei eigenen Testskripten gegen die API niemals über alle fünf Häuser
+  parallel abfragen.
 
 ---
 
@@ -324,10 +346,13 @@ rotiert worden sein (Settings → API); falls nicht, dringend nachholen.
 
 | Problem | Wahrscheinlichste Ursache | Lösung |
 |---|---|---|
-| **Keine Mail wird versendet, freigegebene Entwürfe landen auf `failed`** | ⚠️ **Go-Live-Blocker, Stand 31.07.2026:** Alle sechs Zeilen in `hotel_signatures` enthalten noch die Seed-Platzhalter (`Musterstraße 1 · 44000 Musterstadt`, `[Name]`, `HRB [Nummer]`). `hasPlaceholder()` (`backend/src/utils/signatures.ts`) hält den Versand deshalb **absichtlich** an — sonst ginge an jeden Gast eine erfundene Anschrift mit unvollständigen Pflichtangaben (§5 TMG / §35a GmbHG). | Dashboard → `/settings` → für **alle** Hotels **und** `DEFAULT` die echten Daten eintragen. Danach betroffene Mails mit „Neu prüfen" erneut anstoßen. Log-Zeile: `⛔ … Entwurf enthält Signatur-Platzhalter — Versand angehalten.` |
+| **Keine Mail wird versendet, freigegebene Entwürfe landen auf `failed`** | ⚠️ **Go-Live-Blocker, Stand 04.08.2026:** Die Signaturen tragen inzwischen die echten Firmen- und Hoteldaten (aus dem Impressum bzw. den Hotelseiten von petul.de), es fehlen aber noch **zwei Angaben**, und solange die fehlen, hält `hasPlaceholder()` (`backend/src/utils/signatures.ts`) den Versand **absichtlich** an: (1) die **Vornamen der beiden Geschäftsführer** — das Impressum nennt nur „Herr Suha und Herr Saha", §35a GmbHG verlangt ausgeschriebene Namen; (2) die **Anschrift des Art Hotel Brunnen** (H5), das auf petul.de nicht geführt wird. Der Geschäftsführer-Block steht in **jeder** Signatur, deshalb sperrt diese eine Lücke alle fünf Häuser. | Beide Angaben bei Petul erfragen, dann Dashboard → `/settings` eintragen (Marker: `[Vorname ergänzen]`, `[Straße ergänzen]`, `[PLZ Ort ergänzen]`). Danach betroffene Mails mit „Neu prüfen" erneut anstoßen. Log-Zeile: `⛔ … Entwurf enthält Signatur-Platzhalter — Versand angehalten.` |
+| **Viele Mails auf `failed`, Meldung „Gastsuche unvollständig … mehr als 50 kommende Aufenthalte"** | **(behoben 04.08.2026)** Die Gastsuche lud `first: 50` Aufenthalte und filterte clientseitig; bei 50 Treffern war die Liste abgeschnitten und der Gast dahinter unauffindbar. Drei der fünf Häuser lagen längst darüber (130 / 115 / 82), dort scheiterte faktisch jeder Gastlookup ohne Reservierungsnummer — 9 von 11 `failed`-Mails kamen daher. | Behoben durch Blätterung (s. Schema-Eigenheiten oben). Tritt die Meldung erneut auf, ist die Sicherheitsgrenze von 3000 Aufenthalten erreicht — dann stimmt etwas mit dem Filter nicht. |
+| Rechnungs-/Nachfrage zu einem beendeten Aufenthalt: „Kein Gast gefunden" | **(behoben 04.08.2026)** Die Suche filterte auf `reservation_to >= heute`, ein abgereister Gast fiel also heraus. | Rückblickfenster von 180 Tagen (`ROOM_STAY_LOOKBACK_DAYS`). Die Sortierung stellt aktuelle/kommende Aufenthalte vor die vergangenen, damit `roomStays[0]` weiter der relevante Datensatz ist. |
+| Gast nennt eine Booking.com-/Airbnb-Nummer → „Reservierung nicht gefunden" | **(behoben 04.08.2026)** Die Portalnummer wurde als 3RPMS-Code gesucht, wo sie nicht existiert. | Schlägt die Code-Suche fehl, wird über die Absenderadresse gesucht; der Treffer trägt `unresolvedReservationCode`, und der Action Agent wird angewiesen, die genannte Nummer nicht zu bestätigen. |
 | **Mailempfang tot, aber `pm2 list` zeigt "online"** | War bis 28.07.2026 das größte Risiko: ein einziger gescheiterter Reconnect legte den Empfang dauerhaft still — belegt vom 21.–28.07.2026, sieben Tage, bei durchgehend grünem PM2. Zusätzlich brach die Verbindung nach **jeder** Mail exakt 5:00 Min später ab. Beides behoben (UNSEEN-Scan im Lock, Reconnect mit Backoff + `.catch()`, Handler vor `connect()`, Watchdog). | Seit 28.07. drei Tage ohne einen einzigen Abbruch. Prüfen mit `grep Heartbeat logs/out.log \| tail -3` — meldet alle 5 Min den Verbindungszustand. Bei „GETRENNT" beendet sich der Prozess nach 30 Min selbst, PM2 startet neu. |
 | Antwort auf eine Booking.com-/Airbnb-Nachricht kommt beim Gast nie an | Bis 28.07. ging jede Antwort an `From:` — bei Portalmails ist das `noreply@…`. `Reply-To` wurde nirgends gelesen, die Mail galt trotzdem als `sent`. | Behoben: `reply_to` wird beim Empfang mitgespeichert und im Versand bevorzugt. Das Dashboard zeigt über dem Entwurf „Antwort geht an: …" inkl. Kennzeichnung „via Reply-To". |
-| Entwurf nennt Zimmer/Datum/Preis einer fremden Buchung | Mehrere Aufenthalte auf dieselbe E-Mail-Adresse (typisch: Firmenbuchung auf `buchung@firma.de`). Die 3RPMS-Query liefert unsortiert, `roomStays[0]` war ein beliebiger Treffer. | Behoben: Sortierung nach Anreisedatum + `pms_ambiguous`-Kennzeichnung. Das Dashboard zeigt dann „Zuordnung unsicher" mit Begründung. Bei mehr als 50 kommenden Aufenthalten meldet die Suche jetzt einen Fehler statt „Gast nicht gefunden". |
+| Entwurf nennt Zimmer/Datum/Preis einer fremden Buchung | Mehrere Aufenthalte auf dieselbe E-Mail-Adresse (typisch: Firmenbuchung auf `buchung@firma.de`). Die 3RPMS-Query liefert unsortiert, `roomStays[0]` war ein beliebiger Treffer. | Behoben: Sortierung nach Anreisedatum + `pms_ambiguous`-Kennzeichnung. Das Dashboard zeigt dann „Zuordnung unsicher" mit Begründung. `ambiguous` zählt nur Aufenthalte innerhalb derselben Gruppe (aktuell/kommend bzw. vergangen) — ein abgeschlossener Aufenthalt neben einer kommenden Buchung ist Historie, keine Mehrdeutigkeit. |
 | **Backend tut nichts, alle Mails bleiben liegen, `pm2 logs` voller Fehler** | Supabase-Egress-Kontingent überschritten (`exceed_egress_quota`) — Supabase blockiert dann das GESAMTE Projekt, jeder DB-Zugriff (`watchNewMails`, `processOutbound`, `archiveStaleMails`) schlägt fehl. Kein Code-Bug: 3RPMS läuft parallel weiter (Settings laden beim PM2-Start normal). Trat am 14.07.2026 auf, **seit 31.07.2026 wieder normal** (Backend verarbeitet Mails, PostgREST antwortet mit 200). | **Prüfen:** `pm2 logs petul-mail-automation --lines 20` — Text `exceed_egress_quota` = blockiert. **Fix (nur der Projekt-Owner):** Supabase-Dashboard (Projekt `uxqcpmnanjfyztyhsdsi`) → Settings → Billing → Plan upgraden oder Spend-Cap entfernen. |
 | Nach einem Passwortwechsel sind alle Rezeptionistinnen ausgeloggt | Kein Fehler — der Wechsel widerruft absichtlich jede bestehende Session (s. Sicherheitsarchitektur) | Neues Passwort im Team weitergeben; einmal neu anmelden genügt |
 | Passwortwechsel meldet "Die Tabelle dashboard_auth fehlt" | `backend/supabase_migration_dashboard_auth.sql` wurde noch nicht im Supabase SQL-Editor ausgeführt | Migration ausführen. Bis dahin läuft der Login unverändert über `DASHBOARD_PASSWORD` weiter |

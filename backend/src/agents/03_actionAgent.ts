@@ -59,8 +59,20 @@ export async function determineAction(
         ? `\nZIMMERKATEGORIEN (für Verfügbarkeitshinweise):\n${JSON.stringify(categories, null, 2)}\n`
         : "\nZIMMERKATEGORIEN: Nicht geladen.\n";
 
+    // Die vom Gast genannte Nummer war im PMS unbekannt (typisch: Booking.com- oder
+    // Airbnb-Nummer), die Buchung wurde stattdessen über die Mailadresse gefunden. Ohne
+    // diesen Hinweis bestätigt der Entwurf die genannte Nummer, als sei sie geprüft.
+    const unresolvedCode = prefetchedPmsData?.unresolvedReservationCode;
+    const codeWarning = unresolvedCode
+        ? `\n⚠️ WICHTIG: Die vom Gast genannte Nummer "${unresolvedCode}" existiert im PMS NICHT — ` +
+          `vermutlich eine Portal-Buchungsnummer (Booking.com/Airbnb). Die unten stehenden Daten ` +
+          `stammen aus der Suche über die Absenderadresse. Bestätige diese Nummer NICHT und ` +
+          `wiederhole sie nicht als unsere Reservierungsnummer. Nenne, falls vorhanden, unsere ` +
+          `eigene Nummer aus den PMS-Daten.\n`
+        : "";
+
     const pmsSection = prefetchedPmsData
-        ? `\n## PMS-DATEN (RESERVIERUNG / GAST)\n${JSON.stringify(prefetchedPmsData, null, 2)}\n`
+        ? `\n## PMS-DATEN (RESERVIERUNG / GAST)${codeWarning}\n${JSON.stringify(prefetchedPmsData, null, 2)}\n`
         : "\n## PMS-DATEN\nKeine Buchungsdaten vorhanden (Neugast oder allgemeine Anfrage). Inhaltlich antworten ohne technische Erklärungen.\n";
 
     const inventorySection = prefetchedInventory

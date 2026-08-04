@@ -332,6 +332,24 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                         const node = res?.reservations?.edges?.[0]?.node;
                         if (node) { console.log(`   ✅ Reservierung per Code gefunden: ${node.code}`); return { attempted: true, data: node }; }
                         console.warn(`   ⚠️  [3RPMS] Code-Suche: Reservierung "${resNum}" nicht gefunden`);
+
+                        // Eine im Text genannte Nummer ist längst nicht immer eine
+                        // 3RPMS-Reservierungsnummer: bei Booking.com und Airbnb nennt der
+                        // Gast die Portalnummer, die im PMS gar nicht vorkommt (belegt an
+                        // "6032653131"). Bisher endete das auf `failed`, obwohl derselbe
+                        // Gast über seine Mailadresse auffindbar war. Der Treffer wird als
+                        // solcher gekennzeichnet, damit Entwurf und Dashboard nicht so tun,
+                        // als sei die genannte Nummer bestätigt worden.
+                        const viaEmail = mailData.absender
+                            ? await searchReservationsByEmail(hotelApiKey, mailData.absender).catch(() => null)
+                            : null;
+                        if (viaEmail) {
+                            console.log(`   ✅ Nummer "${resNum}" unbekannt, Gast aber per E-Mail gefunden (${resolvedHotel})`);
+                            return {
+                                attempted: true,
+                                data: { ...viaEmail, unresolvedReservationCode: resNum },
+                            };
+                        }
                         return { attempted: true, data: null };
                     } catch (err: any) {
                         console.warn(`   ⚠️  [3RPMS] Code-Suche Fehler: ${err.message}`);

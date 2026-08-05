@@ -29,6 +29,7 @@ import {
     getHotelSettings,
 } from "./utils/threerpms";
 import { getSignature, hasPlaceholder } from "./utils/signatures";
+import { validateMutation } from "./utils/mutationGuard";
 
 dotenv.config();
 
@@ -704,7 +705,15 @@ async function processOutbound() {
                 let mutationError: string | null = null;
 
                 if (actionData?.graphql_mutation && actionData.graphql_mutation !== "none") {
-                    if (hotel?.key) {
+                    // Vorprüfung gegen das reale Schema. Ohne sie ging ein frei vom
+                    // Modell formulierter String ungeprüft an die API — und keine der
+                    // real vorgeschlagenen Mutationen war ausführbar (s. mutationGuard.ts).
+                    const guard = validateMutation(actionData.graphql_mutation);
+                    if (!guard.ok) {
+                        mutationFailed = true;
+                        mutationError = `Mutation abgelehnt: ${guard.reason}`;
+                        console.error(`⛔ Mutation NICHT ausgeführt (${mail.mail_id}): ${guard.reason}`);
+                    } else if (hotel?.key) {
                         try {
                             const variables = typeof actionData.graphql_variables === "string"
                                 ? JSON.parse(actionData.graphql_variables)

@@ -128,77 +128,109 @@ Nur wenn die Sprache der Mail nicht erkennbar ist → Deutsch als Fallback.
 
 # TECHNISCHE REFERENZ — 3RPMS Mutationen (NUR nach Freigabe ausführen)
 
-## Mutations (Schreiben — NUR mit Freigabe)
+> Die folgenden Feldnamen stammen aus einer Schema-Abfrage der echten API (31.07.2026).
+> Sie sind verbindlich. Erfinde **niemals** zusätzliche Felder — jedes Feld, das hier nicht
+> steht, führt zur Ablehnung der gesamten Mutation, und der Gast bekommt eine Zusage,
+> die im Hotelsystem nie ankommt.
 
-### updateRoomStay — Check-in/Check-out Zeit ändern
+## ⛔ WAS DIE API NICHT KANN — hier NIEMALS eine Ausführung zusagen
+
+Diese vier Fälle sind über die Schnittstelle **technisch unmöglich**. Formuliere eine
+freundliche Antwort, die **nicht** behauptet, die Änderung sei erfolgt, und setze
+`api_action` auf den Hinweis für den Empfang:
+
+| Gastwunsch | Warum unmöglich | `api_action` |
+|---|---|---|
+| **Umbuchung** (anderer Zeitraum) | `updateRoomStay` kennt nur `check_in`/`check_out`; `updateReservation` hat kein Datumsfeld | `"Manuelle Umbuchung durch Empfang"` |
+| **Zimmer-/Kategoriewechsel** | Es existiert keine Mutation dafür | `"Manueller Zimmerwechsel durch Empfang"` |
+| **Preisänderung einer Buchung** | Nur `updateCategoryPrices` (gilt kategorieweit, nicht pro Buchung) | `"Manuelle Preisanpassung durch Empfang"` |
+| **Late Check-out für einen künftigen Aufenthalt** | `check_out` ist erst setzbar, **nachdem** der Gast eingecheckt hat | `"Late Check-out vormerken (Empfang)"` |
+
+Bei diesen Fällen: Wunsch bestätigen im Sinne von „wir kümmern uns darum" — **nicht**
+„erledigt". Formulierungen wie „Ihre Reservierung wurde geändert" sind hier verboten.
+
+## ✅ Datumsformat (häufigster Fehler)
+
+Alle `Datetime`-Felder verlangen einen **Zeitzonen-Offset**:
+`"2026-10-25T14:00:00+02:00"` ✅   —   `"2026-10-25T14:00:00"` ❌ wird abgelehnt.
+Reine `Date`-Felder (`reservation_from`, `reservation_to`) bleiben `"2026-10-25"`.
+
+### updateRoomStay — NUR tatsächliche Check-in-/Check-out-Zeitpunkte
 ```graphql
 mutation {
   updateRoomStay(input: {
-    id: "ROOM_STAY_ID"
-    check_in: "2025-06-01T12:00:00"
-    check_out: "2025-06-03T14:00:00"
-    mealNotes: "Vegetarisch"
-    guestMessage: "Willkommen!"
+    id: "11697546"
+    check_out: "2026-10-25T14:00:00+02:00"
   }) {
     roomStay { id check_in check_out }
-    errors { message }
   }
 }
 ```
+Erlaubt sind **ausschließlich** `id`, `check_in`, `check_out`.
+`mealNotes` und `guestMessage` gibt es hier **nicht** (nur beim Import einer neuen Buchung).
+`check_out` setzt voraus, dass der Aufenthalt bereits eingecheckt ist.
 
 ### createExternalSale — Zusatzleistung buchen (Hund, Frühstück, Parkplatz)
 ```graphql
 mutation {
   createExternalSale(input: {
-    productId: "EXTERNAL_SALES_PRODUCT_ID"
-    roomStayId: "ROOM_STAY_ID"
+    productId: "1234"
+    roomStayId: "11697546"
     amount: "15.00"
-    saleCreatedAt: "2025-06-01T10:00:00"
+    saleCreatedAt: "2026-08-01T10:00:00+02:00"
     receiptNumber: "REC-12345"
-  }) {
-    sale { id }
-    errors { message }
-  }
+  }) { sale { id } }
 }
 ```
+Alle fünf Felder sind Pflicht. `productId` muss ein real existierendes Produkt sein —
+verwende ausschließlich IDs aus dem mitgelieferten Produktkatalog.
 
-### updateReservation — Reservierungs-Metadaten ändern
+### updateReservation — nur Metadaten
 ```graphql
-mutation {
-  updateReservation(input: {
-    reservationId: "RESERVATION_ID"
-    groupName: "Firmenname"
-  }) {
-    reservation { id }
-  }
-}
+mutation { updateReservation(input: { id: "555", groupName: "Firmenname" }) { reservation { id } } }
 ```
-⚠️ Kein `status`-Feld — Stornierungen nur manuell im PMS möglich.
+Das Feld heißt `id` (**nicht** `reservationId`). Erlaubt: `id`, `groupName`, `clientId`,
+`contactId`, `billingClientId`, `billingContactId`. Kein Datum, kein Zimmer, kein Status.
 
-### importReservation — Neue Reservierung anlegen
+### importReservation — neue Buchung anlegen
 ```graphql
 mutation {
   importReservation(input: {
-    externalId: "EXTERNE_ID"
-    client: { id: "CLIENT_ID" }
-    roomStays: [{ category: "CATEGORY_ID", reservation_from: "YYYY-MM-DD", reservation_to: "YYYY-MM-DD", rates: [...] }]
-  }) {
-    reservation { id code status }
-  }
+    externalId: "MAIL-2026-0815"
+    status: ACTIVE
+    client: { id: "98765" }
+    roomStays: [{
+      categoryId: "10041"
+      reservation_from: "2026-10-06"
+      reservation_to: "2026-10-08"
+      rateCode: "STD"
+      ageGroups: { adults: 2 }
+      dailyRates: { rates: [99.00, 99.00] }
+    }]
+  }) { reservation { id code status } }
 }
 ```
+Pflicht auf oberster Ebene: `externalId`, `status`, `client`, `roomStays`.
+Pflicht je RoomStay: `categoryId`, `reservation_from`, `reservation_to`, `ageGroups`,
+`dailyRates`, `rateCode`. Die Felder heißen `categoryId` (nicht `category`) und
+`dailyRates` (nicht `rates`).
+`client.id` muss eine **echte** Client-ID sein — steht kein Gast in den PMS-Daten, ist die
+Buchung nicht automatisch anlegbar → `api_action: "Manuelle Buchung durch Empfang"`.
 
 ### addRoomStayGuest / removeRoomStayGuest
 ```graphql
-mutation { addRoomStayGuest(input: { roomStayId: "ID", clientId: "CLIENT_ID" }) { roomStay { id } } }
-mutation { removeRoomStayGuest(input: { roomStayId: "ID", clientId: "CLIENT_ID" }) { roomStay { id } } }
+mutation { addRoomStayGuest(input: { roomStayId: "11697546", clientId: "98765" }) { roomStay { id } } }
 ```
 
 ---
 
 ## STORNIERUNGEN
-`updateReservation` hat kein `status`-Feld. Stornierungen direkt in 3RPMS sind nur manuell möglich.
-→ Bei Stornierungsanfragen: Vollständige Antwort formulieren + `api_action: "Manuelle Stornierung durch Empfang"`
+Eine direkte Storno-Mutation gibt es nicht. Der Status `CANCELLED` existiert zwar
+(`ReservationStatus`), ist aber nur über `importReservation` erreichbar — und das
+überschreibt die Buchung vollständig, was ausschließlich für Reservierungen funktioniert,
+die diese Integration selbst angelegt hat.
+→ Bei Stornierungsanfragen deshalb immer: vollständige Antwort formulieren,
+`api_action: "Manuelle Stornierung durch Empfang"`, `graphql_mutation: "none"`.
 
 ## SELF-CHECK-IN / CHECK-OUT
 - `reservation.selfcheckinStatus = AVAILABLE` → Gast kann online einchecken (URL nennen)

@@ -251,6 +251,91 @@ Wenn Antworten auf Deutsch kommen trotz englischer Mail → beide Dateien prüfe
 
 ---
 
+## 3RPMS — Was die Automatisierung wirklich kann
+
+> Erhoben per vollständiger Schema-Introspection der Live-API (05.08.2026, H1):
+> **25 Mutationen, 17 Queries, 192 Typen**. Die Wahrheitsquelle im Code ist
+> `backend/src/utils/pmsCapabilities.ts` — sie speist **sowohl** den Prompt des Action
+> Agents (`buildCapabilityPrompt()`) **als auch** die Validierung vor der Ausführung
+> (`mutationGuard.ts`). Beide dürfen nie wieder auseinanderlaufen.
+
+### Zwei Ebenen: was das Schema kann ≠ was dieser Zugang darf
+
+Das war der folgenschwerste blinde Fleck. Das Schema kennt `importReservation`,
+`createExternalSale` und `createDeposit` — ausführbar war am 05.08.2026 **keine davon**:
+
+| Voraussetzung | Messung H1 | Konsequenz |
+|---|---|---|
+| `ratePlans` | ❌ „Die Reservierungs-API wurde nicht aktiviert" | `importReservation` unmöglich (der `rateCode` ist Pflicht und stammt von dort) |
+| `externalSalesProducts` | 0 Einträge | `createExternalSale` unmöglich (`productId` ist Pflicht) |
+| `paymentMethods` | 0 Einträge | `createDeposit` unmöglich (`paymentMethod` ist Pflicht) |
+
+`probeCapabilities()` (in `threerpms.ts`) misst das beim Start je Hotel; das Ergebnis
+landet über `setCapabilities()` im Prompt des Action Agents. Steht im Log
+`🔒 <Hotel>: n Aktion(en) gesperrt`, ist das kein Fehler, sondern der reale Zustand.
+
+**Um die gesperrten Aktionen freizuschalten:**
+1. **Reservierungs-API** — muss 3RPMS für den Zugang aktivieren. Nur dann sind neue
+   Buchungen, Umbuchungen und API-Stornos überhaupt möglich.
+2. **Verkaufsprodukt** — einmalig `createExternalSalesProduct` aufrufen. Pro Integration
+   ist genau **eines** möglich (Schema-Vorgabe), verschiedene Leistungen werden über
+   `amount` und `receiptNumber` unterschieden, nicht über eigene Produkte.
+3. **Zahlungsart** — einmalig `createPaymentMethod` aufrufen (eine pro Integration/Hotel).
+
+### ⛔ Technisch unmöglich — unabhängig von jeder Freischaltung
+
+| Gastwunsch | Warum |
+|---|---|
+| **Umbuchung** (anderer Zeitraum) | `UpdateRoomStayInput` kennt nur `id`, `check_in`, `check_out`; `UpdateReservationInput` kein Datumsfeld |
+| **Zimmer-/Kategoriewechsel** | Keine Mutation vorhanden |
+| **Preis einer einzelnen Buchung** | Nur `updateCategoryPrices` — gilt kategorieweit und wird **sofort an alle Buchungsportale gepusht** |
+| **Late Check-out vormerken** | `check_out` ist laut Schema erst setzbar, **nachdem** eingecheckt wurde |
+| **Storno einer fremden Buchung** | `ReservationStatus.CANCELLED` existiert, aber nur über `importReservation` erreichbar — das setzt die eigene `externalId` voraus |
+
+`check_in`/`check_out` sind die **tatsächlichen An-/Abreisezeitpunkte** (Registrierung an
+der Rezeption), nicht die gewünschten Uhrzeiten einer künftigen Buchung. Diese Verwechslung
+steckte im alten Prompt und erzeugte Entwürfe wie „Ihre Reservierung wurde geändert".
+
+### Der Fehler, der das alles aufdeckte
+
+Die Vorlagen in `prompts/03_action.md` enthielten **erfundene Felder**. Der Agent hat sie
+korrekt kopiert — und **keine** der vier real erzeugten Mutationen war ausführbar:
+
+```
+updateRoomStay(… mealNotes, guestMessage …)  → existieren nur in ImportRoomStayInput
+updateRoomStay(check_out:"2026-10-25T14:00:00") → Datum ohne Zeitzone wird abgelehnt
+importReservation(client:{id:"CLIENT_ID"})   → Prompt-Platzhalter statt echter ID
+importReservation(category, rates)           → heißen categoryId / dailyRates
+```
+
+Unentdeckt blieb das, weil in der gesamten Projektlaufzeit nur **eine** Mail versendet
+wurde. Produktiv hätte jede dieser Mails dem Gast eine Änderung zugesagt, die nie stattfindet.
+
+**Deshalb gilt:** Feldnamen niemals im Prompt pflegen, sondern in `pmsCapabilities.ts`.
+Testfälle liegen in `backend/src/utils/__tests__/mutationGuard.test.ts` (7 Fälle, davon 4 real
+aufgetretene) — bei jeder Änderung mitlaufen lassen: `npx tsx src/utils/__tests__/mutationGuard.test.ts`
+
+### Datumsformat — häufigster Einzelfehler
+
+`Datetime`-Felder verlangen `Y-m-d\TH:i:sP`, also **mit Zeitzonen-Offset**:
+`"2026-10-25T14:00:00+02:00"` ✅ — `"2026-10-25T14:00:00"` ❌ (komplette Mutation abgelehnt).
+Reine `Date`-Felder (`reservation_from`, `reservation_to`) bleiben `"2026-10-25"`.
+
+### Weitere harte Limits aus dem Schema
+
+- `createExternalSale`: Reservierung darf **nicht storniert** sein; `receiptNumber` muss
+  eindeutig sein — bei Wiederholung entsteht ein **zweiter Beleg** auf der Gastrechnung.
+- `importReservation` mit gleicher `externalId` **überschreibt** die bestehende Reservierung
+  inklusive aller RoomStays. Für Einzeländerungen `updateRoomStay` bevorzugen.
+- `dailyRates` muss **jeden** Tag zwischen `reservation_from` und `reservation_to` abdecken
+  (Abreisetag exklusive); `rateCode` muss aus `Query.ratePlans` stammen.
+- `createClient`: `country` und `language` sind **Pflicht**, dazu `firstname` oder `lastname`.
+- Türzugang ist möglich (`createRoomAccessKey` + `addRoomAccessKey`, PIN `[A-Za-z0-9]{1,10}`,
+  QR max. 512 Zeichen) — aber **nur selbst erzeugte Keys** sind zuweisbar und widerrufbar.
+- `updateRoomSetup.cleaningStatus`: `CLEAN` / `DIRTY`.
+
+---
+
 ## 3RPMS GraphQL — bekannte Schema-Eigenheiten
 
 - `Reservation.rooms` (nicht `roomStays`, nicht `room_stays`)

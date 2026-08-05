@@ -586,6 +586,48 @@ export async function getHotelSettings(apiKey: string) {
 }
 
 /**
+ * Misst, welche Schreibaktionen für DIESEN Zugang tatsächlich freigeschaltet sind.
+ *
+ * Das Schema allein sagt darüber nichts: Am 05.08.2026 kannte es importReservation,
+ * createExternalSale und createDeposit — ausführbar war keine davon, weil die
+ * Reservierungs-API für den Zugang nicht aktiviert war und weder ein Verkaufsprodukt
+ * noch eine Zahlungsart existierte. Ohne diese Messung würde der Action Agent Aktionen
+ * zusagen, die garantiert scheitern.
+ *
+ * Drei Queries, sequenziell — 3RPMS sperrt die IP bei zu vielen Anfragen in kurzer Folge.
+ */
+export async function probeCapabilities(apiKey: string) {
+  const result = {
+    reservierungsApi: false,
+    salesProductId: null as string | null,
+    paymentMethodId: null as string | null,
+    geprueftAm: new Date().toISOString(),
+  };
+
+  // ratePlans ist der verlässliche Indikator: importReservation verlangt einen rateCode
+  // von dort. Ist die Reservierungs-API nicht aktiviert, antwortet die Query mit einem
+  // Konfigurationsfehler statt mit Daten.
+  try {
+    await query3RPMS<any>(apiKey, `query { ratePlans(first:1){ edges { node { code } } } }`);
+    result.reservierungsApi = true;
+  } catch {
+    result.reservierungsApi = false;
+  }
+
+  try {
+    const p = await query3RPMS<any>(apiKey, `query { externalSalesProducts(first:1){ edges { node { id name } } } }`);
+    result.salesProductId = p?.externalSalesProducts?.edges?.[0]?.node?.id ?? null;
+  } catch { /* bleibt null — Aktion gilt als gesperrt */ }
+
+  try {
+    const m = await query3RPMS<any>(apiKey, `query { paymentMethods(first:1){ edges { node { id name } } } }`);
+    result.paymentMethodId = m?.paymentMethods?.edges?.[0]?.node?.id ?? null;
+  } catch { /* bleibt null */ }
+
+  return result;
+}
+
+/**
  * Unsere Integration's External Sales Produkte laden.
  * Diese Produkt-IDs werden für createExternalSale benötigt.
  */

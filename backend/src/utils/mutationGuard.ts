@@ -23,39 +23,12 @@ export type GuardResult =
     | { ok: true; mutation: string }
     | { ok: false; reason: string };
 
-/** Feldnamen je Mutation — direkt aus der Schema-Introspection übernommen. */
-const ALLOWED: Record<string, { required: string[]; optional: string[] }> = {
-    updateRoomStay: {
-        required: ["id"],
-        // KEIN mealNotes/guestMessage — die gibt es nur in ImportRoomStayInput.
-        optional: ["check_in", "check_out"],
-    },
-    updateReservation: {
-        required: ["id"], // NICHT "reservationId"
-        optional: ["groupName", "clientId", "contactId", "billingClientId", "billingContactId"],
-    },
-    createExternalSale: {
-        required: ["productId", "roomStayId", "amount", "saleCreatedAt", "receiptNumber"],
-        optional: ["receiptPdfUrl", "waiterName", "tableName"],
-    },
-    createDeposit: {
-        required: ["paymentMethod", "reservation", "amount"],
-        optional: ["datetime", "postingText"],
-    },
-    addRoomStayGuest: {
-        required: ["roomStayId", "clientId"],
-        optional: ["beforeId"],
-    },
-    removeRoomStayGuest: {
-        required: ["roomStayId", "clientId"],
-        optional: [],
-    },
-    importReservation: {
-        required: ["externalId", "status", "client", "roomStays"],
-        optional: ["bookingChannelCode", "bookingSourceId", "bookingTypeId", "stayTypeId",
-                   "paymentTermsId", "groupName", "notes", "contact"],
-    },
-};
+// Feldnamen je Mutation — aus pmsCapabilities.ts, damit Guard und Agenten-Prompt
+// dieselbe Quelle haben. Genau ihr Auseinanderlaufen war der Ausgangsfehler: Die
+// Prompt-Vorlagen enthielten Felder, die im Schema nie existierten.
+import { MUTATIONS } from "./pmsCapabilities";
+
+const ALLOWED = MUTATIONS;
 
 /**
  * Platzhalter, die das Modell aus den Prompt-Vorlagen übernimmt, statt echte Werte

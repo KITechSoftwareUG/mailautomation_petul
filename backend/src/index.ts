@@ -27,9 +27,11 @@ import {
     findHotelByGuestEmail,
     getInventory,
     getHotelSettings,
+    probeCapabilities,
 } from "./utils/threerpms";
 import { getSignature, hasPlaceholder } from "./utils/signatures";
 import { validateMutation } from "./utils/mutationGuard";
+import { setCapabilities, getCapabilities, fehlendeVoraussetzungen } from "./utils/pmsCapabilities";
 
 dotenv.config();
 
@@ -142,6 +144,22 @@ async function warmProductCache() {
             console.log(`   ✅ ${hotel.name}: Settings geladen`);
         } catch (err: any) {
             console.warn(`   ⚠️  ${hotel.name}: Settings nicht verfügbar (${err.message})`);
+        }
+
+        // Welche Schreibaktionen sind für diesen Zugang überhaupt freigeschaltet?
+        // Das Schema allein sagt darüber nichts — s. probeCapabilities().
+        try {
+            const caps = await probeCapabilities(hotel.key);
+            setCapabilities(hotel.id, caps);
+            const gesperrt = fehlendeVoraussetzungen(caps);
+            if (gesperrt.length === 0) {
+                console.log(`   🔓 ${hotel.name}: alle Schreibaktionen verfügbar`);
+            } else {
+                console.warn(`   🔒 ${hotel.name}: ${gesperrt.length} Aktion(en) gesperrt`);
+                for (const g of gesperrt) console.warn(`      • ${g}`);
+            }
+        } catch (err: any) {
+            console.warn(`   ⚠️  ${hotel.name}: Fähigkeiten nicht prüfbar (${err.message})`);
         }
     }
 }
@@ -472,6 +490,9 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
             null,
             prefetchedPmsData,
             prefetchedInventory,
+            // Gemessene Fähigkeiten dieses Hauses: ohne sie schlägt der Agent Aktionen
+            // vor, die für diesen Zugang gar nicht freigeschaltet sind.
+            getCapabilities(hotel?.id),
         );
         console.log(`   → Geplante Aktion: ${finalActionData.api_action}`);
 

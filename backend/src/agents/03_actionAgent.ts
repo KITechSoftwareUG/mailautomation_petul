@@ -3,6 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import * as dotenv from "dotenv";
 import { getActionPrompt } from "./prompts";
+import { buildCapabilityPrompt, type HotelCapabilities } from "../utils/pmsCapabilities";
 
 dotenv.config();
 
@@ -46,6 +47,7 @@ export async function determineAction(
     execution_error: string | null = null,
     prefetchedPmsData: any = null,
     prefetchedInventory: any = null,
+    capabilities: HotelCapabilities | null = null,
 ): Promise<ActionResult> {
 
     // Nur Zimmerkategorien weitergeben — Einzelzimmer (roomSetups) sind für E-Mails irrelevant
@@ -79,11 +81,29 @@ export async function determineAction(
         ? `\n## VERFÜGBARKEIT\n${JSON.stringify(prefetchedInventory, null, 2)}\n`
         : "";
 
+    // Der Produktkatalog entscheidet, ob createExternalSale überhaupt ausführbar ist:
+    // productId ist Pflicht und muss ein real existierendes Produkt sein. Pro Integration
+    // gibt es davon genau EINES (Schema-Vorgabe), verschiedene Leistungen werden über
+    // amount und receiptNumber unterschieden.
+    const salesProducts = productCatalog?.externalSalesProducts?.edges?.map((e: any) => ({
+        id: e.node.id, name: e.node.name,
+    })) || null;
+
+    const salesSection = salesProducts?.length
+        ? `\nEXTERNAL-SALES-PRODUKT (einzig gültige productId für createExternalSale):\n${JSON.stringify(salesProducts, null, 2)}\n`
+        : `\nEXTERNAL-SALES-PRODUKT: keines vorhanden — createExternalSale ist NICHT ausführbar.\nBei Zusatzleistungen: graphql_mutation "none", api_action "Zusatzleistung manuell buchen (Empfang)".\n`;
+
     const { object } = await generateObject({
         model: openai("gpt-4o-mini"),
         schema: ACTION_SCHEMA,
+        // buildCapabilityPrompt() wird aus pmsCapabilities.ts erzeugt, also aus derselben
+        // Quelle, gegen die mutationGuard später prüft. Vorher standen die Feldnamen nur
+        // als handgeschriebener Text in 03_action.md — mit erfundenen Feldern, die das
+        // Schema nie kannte. Keine der real erzeugten Mutationen war ausführbar.
         system: `${getActionPrompt()}
-${productSection}
+
+${buildCapabilityPrompt(capabilities)}
+${productSection}${salesSection}
 ${execution_error ? `⚠️ VORHERIGER FEHLER: "${execution_error}" — Korrigiere deine Anfrage.\n` : ""}`,
 
         prompt: `Bearbeite diese E-Mail aus dem Petul-Postfach:

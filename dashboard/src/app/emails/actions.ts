@@ -30,6 +30,24 @@ export async function fetchEmails() {
 
 // Body wird nur für die gerade ausgewählte Mail nachgeladen, nicht für die ganze Liste
 // (siehe Kommentar bei EMAIL_LIST_SELECT — das war der Haupttreiber für den Egress-Überlauf).
+/**
+ * Was die 3RPMS-Anbindung je Hotel real kann. Wird im Dashboard als Statusleiste
+ * angezeigt, damit sichtbar ist, welche Aktionen automatisch laufen und welche
+ * (noch) von Hand erledigt werden müssen.
+ *
+ * Fehlt die Tabelle — die Migration ist optional —, wird still ein leeres Ergebnis
+ * geliefert: Die entscheidende Information steht ohnehin pro Mail in agent_logs.
+ */
+export async function fetchCapabilities() {
+    const { data, error } = await supabaseAdmin
+        .from("pms_capabilities")
+        .select("hotel_id, hotel_name, reservierungs_api, sales_product_id, payment_method_id, gesperrt, geprueft_am")
+        .order("hotel_id");
+
+    if (error) return [];
+    return data ?? [];
+}
+
 export async function fetchEmailBody(emailId: string) {
     const { data, error } = await supabaseAdmin
         .from("emails")

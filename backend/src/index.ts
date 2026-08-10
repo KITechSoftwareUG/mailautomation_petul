@@ -31,7 +31,7 @@ import {
 } from "./utils/threerpms";
 import { getSignature, hasPlaceholder } from "./utils/signatures";
 import { validateMutation } from "./utils/mutationGuard";
-import { setCapabilities, getCapabilities, fehlendeVoraussetzungen } from "./utils/pmsCapabilities";
+import { setCapabilities, getCapabilities, fehlendeVoraussetzungen, beschreibeManuelleAufgabe } from "./utils/pmsCapabilities";
 
 dotenv.config();
 
@@ -155,8 +155,26 @@ async function warmProductCache() {
             if (gesperrt.length === 0) {
                 console.log(`   🔓 ${hotel.name}: alle Schreibaktionen verfügbar`);
             } else {
-                console.warn(`   🔒 ${hotel.name}: ${gesperrt.length} Aktion(en) gesperrt`);
-                for (const g of gesperrt) console.warn(`      • ${g}`);
+                console.log(`   🔒 ${hotel.name}: ${gesperrt.length} Aktion(en) gesperrt`);
+                for (const g of gesperrt) console.log(`      • ${g}`);
+            }
+
+            // Für die Anzeige im Dashboard festhalten. Die Rezeptionistin muss sehen
+            // können, WARUM eine Aktion nicht automatisch lief — sonst wirkt der reale
+            // Zustand der Schnittstelle wie ein Programmfehler.
+            // Fehlt die Tabelle (Migration noch nicht ausgeführt), ist das kein Problem:
+            // der Stand liegt zusätzlich in agent_logs jeder verarbeiteten Mail.
+            const { error: capErr } = await supabase.from("pms_capabilities").upsert({
+                hotel_id: hotel.id,
+                hotel_name: hotel.name,
+                reservierungs_api: caps.reservierungsApi,
+                sales_product_id: caps.salesProductId,
+                payment_method_id: caps.paymentMethodId,
+                gesperrt,
+                geprueft_am: caps.geprueftAm,
+            }, { onConflict: "hotel_id" });
+            if (capErr && !capErr.message.includes("pms_capabilities")) {
+                console.warn(`   ⚠️  Fähigkeiten nicht speicherbar: ${capErr.message}`);
             }
         } catch (err: any) {
             console.warn(`   ⚠️  ${hotel.name}: Fähigkeiten nicht prüfbar (${err.message})`);
@@ -525,6 +543,14 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 empfaenger: mailData.empfaenger || null,
                 pms_ambiguous: prefetchedPmsData?.ambiguous || false,
                 pms_ambiguity_reason: prefetchedPmsData?.ambiguityReason || null,
+                // Was zum Zeitpunkt dieser Analyse möglich war, plus die konkrete
+                // Handreichung für die Rezeptionistin. Beides wandert ins Dashboard,
+                // damit sie nicht raten muss, ob sie noch etwas von Hand tun muss.
+                manual_task: beschreibeManuelleAufgabe(
+                    finalActionData.api_action,
+                    finalActionData.graphql_mutation,
+                    getCapabilities(hotel?.id),
+                ),
                 queued_at: queuedAt,
             } as any,
         });

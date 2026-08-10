@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
     ArrowRight, Minimize2, Layers, CheckCircle2, Terminal, BrainCircuit, PenTool,
     Database, MessageSquare, Copy, Check, ChevronRight, Sparkles, RefreshCw,
-    XCircle, Clock, Send, AlertTriangle, Loader2, Maximize2, X, Settings, LogOut
+    XCircle, Clock, Send, AlertTriangle, Loader2, Maximize2, X, Settings, LogOut, Lock, Unlock
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -16,6 +16,7 @@ import {
     regenerateDraft,
     forceProcess as forceProcessAction,
     approveOrRejectMail,
+    fetchCapabilities,
 } from "./emails/actions";
 import { logout } from "./auth/actions";
 import { DONE_STATUSES } from "./emails/constants";
@@ -45,6 +46,142 @@ type Email = {
 function getReplyRecipient(email: Email | null | undefined): string | null {
     if (!email) return null;
     return email.agent_logs?.reply_to || email.senders?.[0]?.email || null;
+}
+
+type Capability = {
+    hotel_id: string;
+    hotel_name: string;
+    reservierungs_api: boolean;
+    sales_product_id: string | null;
+    payment_method_id: string | null;
+    gesperrt: string[];
+    geprueft_am: string;
+};
+
+/**
+ * Erklärt in Alltagssprache, was das System selbst erledigt und was die Rezeption
+ * von Hand tun muss. Bewusst ohne Fachbegriffe: "Reservierungs-API" oder
+ * "createExternalSale" sagen der Nutzerin nichts — der Unterschied zwischen
+ * "geht grundsätzlich nicht" und "ist nur noch nicht freigeschaltet" schon.
+ */
+function CapabilityPanel({ caps, onClose }: { caps: Capability[]; onClose: () => void }) {
+    // Was unabhängig von jeder Freischaltung unmöglich ist. Steht so auch im Backend
+    // (pmsCapabilities.ts, NICHT_MOEGLICH) — hier in Nutzersprache übersetzt.
+    const grundsaetzlich = [
+        ["Umbuchung auf einen anderen Zeitraum", "Das Hotelsystem bietet dafür keine Schnittstelle an."],
+        ["Zimmer- oder Kategoriewechsel", "Das Hotelsystem bietet dafür keine Schnittstelle an."],
+        ["Preis einer einzelnen Buchung ändern", "Nur der Preis einer ganzen Kategorie wäre änderbar — das würde alle Gäste betreffen und sofort an Booking.com & Co. gemeldet."],
+        ["Späteren Check-out vorab eintragen", "Die Abreisezeit lässt sich erst eintragen, wenn der Gast eingecheckt hat."],
+        ["Fremde Buchung stornieren", "Nur Buchungen, die dieses Programm selbst angelegt hat, lassen sich darüber stornieren."],
+    ];
+
+    return (
+        <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-8"
+            onClick={onClose}
+        >
+            <motion.div
+                initial={{ scale: 0.97, y: 8 }} animate={{ scale: 1, y: 0 }}
+                className="bg-white w-full max-w-3xl max-h-[85vh] overflow-y-auto custom-scrollbar shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="sticky top-0 bg-[#444444] text-white px-7 py-5 flex items-start justify-between">
+                    <div>
+                        <h2 className="text-[15px] font-black uppercase tracking-widest">Was das System automatisch kann</h2>
+                        <p className="text-[11px] text-white/50 mt-1 max-w-xl leading-relaxed">
+                            Petulia schreibt immer den Antwortentwurf. Ob sie die Änderung auch im Hotelsystem
+                            eintragen kann, hängt davon ab, was 3RPMS über die Schnittstelle zulässt.
+                        </p>
+                    </div>
+                    <button onClick={onClose} className="text-white/40 hover:text-white shrink-0 ml-4"><X className="w-5 h-5" /></button>
+                </div>
+
+                <div className="px-7 py-6 space-y-7">
+                    <section>
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-black/35 mb-3">Pro Haus</h3>
+                        <div className="space-y-2">
+                            {caps.map(c => {
+                                const frei = (c.gesperrt?.length ?? 0) === 0;
+                                return (
+                                    <div key={c.hotel_id} className={`border-l-4 px-4 py-3 ${frei ? "border-[#009697] bg-[#009697]/5" : "border-[#F39200] bg-[#F39200]/5"}`}>
+                                        <div className="flex items-center gap-2">
+                                            {frei ? <Unlock className="w-3.5 h-3.5 text-[#009697]" /> : <Lock className="w-3.5 h-3.5 text-[#F39200]" />}
+                                            <span className="text-[12px] font-bold">{c.hotel_name}</span>
+                                        </div>
+                                        <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
+                                            {[
+                                                ["Buchungen anlegen", c.reservierungs_api],
+                                                ["Zusatzleistungen", !!c.sales_product_id],
+                                                ["Anzahlungen", !!c.payment_method_id],
+                                            ].map(([label, ok]) => (
+                                                <div key={label as string} className="flex items-center gap-1.5">
+                                                    {ok
+                                                        ? <CheckCircle2 className="w-3 h-3 text-[#009697] shrink-0" />
+                                                        : <Lock className="w-3 h-3 text-black/25 shrink-0" />}
+                                                    <span className={ok ? "text-black/70" : "text-black/35"}>{label as string}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        {!frei && (
+                                            <div className="mt-2 text-[10px] text-black/45 leading-relaxed">
+                                                Noch nicht freigeschaltet — die Entwürfe entstehen trotzdem, die Eintragung
+                                                erledigt die Rezeption bis dahin von Hand.
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </section>
+
+                    <section>
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-black/35 mb-3">Immer automatisch</h3>
+                        <ul className="space-y-1.5">
+                            {["Antwortentwurf in der Sprache des Gastes",
+                              "Buchungsdaten des Gastes heraussuchen und im Entwurf verwenden",
+                              "Verfügbarkeit für einen Wunschzeitraum prüfen",
+                              "Mitreisende zu einer Buchung hinzufügen oder entfernen",
+                              "Neuen Gast im Hotelsystem anlegen",
+                              "Spam und Portal-Benachrichtigungen aussortieren"].map(t => (
+                                <li key={t} className="flex items-start gap-2 text-[11px] text-black/65">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-[#009697] shrink-0 mt-px" />{t}
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+
+                    <section>
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-black/35 mb-3">
+                            Geht grundsätzlich nicht — bitte immer von Hand
+                        </h3>
+                        <div className="space-y-2">
+                            {grundsaetzlich.map(([titel, grund]) => (
+                                <div key={titel} className="flex items-start gap-2.5 px-3 py-2 bg-black/[0.03]">
+                                    <XCircle className="w-3.5 h-3.5 text-[#E2001A] shrink-0 mt-0.5" />
+                                    <div>
+                                        <div className="text-[11px] font-bold text-black/70">{titel}</div>
+                                        <div className="text-[10px] text-black/45 leading-relaxed mt-0.5">{grund}</div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <p className="mt-3 text-[10px] text-black/40 leading-relaxed">
+                            In diesen Fällen schreibt Petulia eine Antwort, die nichts Falsches verspricht —
+                            und zeigt über dem Entwurf an, was noch im 3RPMS zu erledigen ist.
+                        </p>
+                    </section>
+
+                    {caps[0]?.geprueft_am && (
+                        <p className="text-[9px] text-black/25 pt-2 border-t border-black/5">
+                            Zuletzt geprüft: {new Date(caps[0].geprueft_am).toLocaleString("de-DE")} · Der Stand wird bei
+                            jedem Programmstart und alle 6 Stunden neu ermittelt.
+                        </p>
+                    )}
+                </div>
+            </motion.div>
+        </motion.div>
+    );
 }
 
 function getApiActionLabel(action: string | undefined): { title: string; beschreibung: string } | null {
@@ -414,6 +551,8 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     );
     const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting" | "regenerating">("idle");
     const [actionError, setActionError] = useState<string | null>(null);
+    const [capabilities, setCapabilities] = useState<Capability[]>([]);
+    const [showCapabilities, setShowCapabilities] = useState(false);
     const [isMinimized, setIsMinimized] = useState(false);
     const [isMailExpanded, setIsMailExpanded] = useState(false);
     const [step, setStep] = useState(0);
@@ -455,6 +594,13 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     const fetchEmails = useCallback(async () => {
         const data = await fetchEmailsAction();
         if (data) setEmails(data as Email[]);
+    }, []);
+
+    // Der Fähigkeitsstand ändert sich nur, wenn 3RPMS etwas freischaltet — einmal beim
+    // Laden reicht. Bewusst NICHT im Polling-Takt: die Anzeige wäre identisch, der
+    // Egress aber dauerhaft höher.
+    useEffect(() => {
+        fetchCapabilities().then(d => setCapabilities((d ?? []) as Capability[]));
     }, []);
 
     useEffect(() => {
@@ -637,6 +783,31 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                         </button>
                                     </div>
                                 </div>
+                                {/* Dauerhaft sichtbarer Zustand der Hotelsystem-Anbindung. Läuft mit,
+                                    damit nie der Eindruck entsteht, das Programm sei defekt, wenn in
+                                    Wahrheit eine Funktion in 3RPMS noch nicht freigeschaltet ist. */}
+                                {capabilities.length > 0 && (() => {
+                                    const gesperrt = capabilities.filter(c => (c.gesperrt?.length ?? 0) > 0).length;
+                                    const alleFrei = gesperrt === 0;
+                                    return (
+                                        <button
+                                            onClick={() => setShowCapabilities(true)}
+                                            className="w-full mb-3 flex items-center gap-2 px-2.5 py-2 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left"
+                                            title="Was das System automatisch kann"
+                                        >
+                                            {alleFrei
+                                                ? <Unlock className="w-3.5 h-3.5 shrink-0 text-[#009697]" />
+                                                : <Lock className="w-3.5 h-3.5 shrink-0 text-[#F39200]" />}
+                                            <div className="min-w-0 flex-1">
+                                                <div className="text-[8px] font-black uppercase tracking-widest text-white/40">Hotelsystem</div>
+                                                <div className={`text-[10px] font-bold leading-tight ${alleFrei ? "text-[#009697]" : "text-[#F39200]"}`}>
+                                                    {alleFrei ? "Alle Aktionen automatisch" : `${gesperrt} von ${capabilities.length} Häusern eingeschränkt`}
+                                                </div>
+                                            </div>
+                                            <ChevronRight className="w-3 h-3 shrink-0 text-white/25" />
+                                        </button>
+                                    );
+                                })()}
                                 <div className="flex h-[3px] w-full mb-3 overflow-hidden">
                                     <div className="flex-1 bg-[#E2001A]" />
                                     <div className="flex-1 bg-[#F39200]" />
@@ -932,6 +1103,28 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         className="flex-1 w-full px-10 py-8 bg-white text-black resize-none outline-none font-sans text-[15px] lg:text-[16px] font-medium leading-relaxed tracking-wide selection:bg-[#6082B6] selection:text-white disabled:cursor-default custom-scrollbar border-0"
                                                     />
                                                 </motion.div>
+                                            )}
+
+                                            {/* Muss die Rezeptionistin nach dem Senden noch etwas von Hand tun?
+                                                Ein Entwurf ohne Systemwirkung sieht genauso aus wie einer mit —
+                                                ohne diesen Hinweis müsste sie bei jeder Mail raten. */}
+                                            {currentMail.status === "processing" && currentMail.agent_logs?.manual_task?.noetig && (
+                                                <div className="shrink-0 mx-8 mt-3 border-l-4 border-[#F39200] bg-[#F39200]/10">
+                                                    <div className="px-4 py-3">
+                                                        <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-[#F39200]">
+                                                            <Lock className="w-3 h-3" />
+                                                            {currentMail.agent_logs.manual_task.art === "gesperrt"
+                                                                ? "Noch nicht freigeschaltet — bitte manuell erledigen"
+                                                                : "Nicht automatisch möglich — bitte manuell erledigen"}
+                                                        </div>
+                                                        <div className="mt-1.5 text-[13px] font-bold text-black/75">
+                                                            {currentMail.agent_logs.manual_task.titel}
+                                                        </div>
+                                                        <div className="mt-1 text-[11px] leading-relaxed text-black/50">
+                                                            {currentMail.agent_logs.manual_task.grund}
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             )}
 
                                             {/* Mehrere Buchungen auf dieselbe Adresse (typisch: Firmenbuchung,
@@ -1273,6 +1466,12 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
             <AnimatePresence>
                 {isMailExpanded && currentMailWithBody && (
                     <MailExpandModal email={currentMailWithBody} onClose={() => setIsMailExpanded(false)} />
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showCapabilities && capabilities.length > 0 && (
+                    <CapabilityPanel caps={capabilities} onClose={() => setShowCapabilities(false)} />
                 )}
             </AnimatePresence>
         </div>

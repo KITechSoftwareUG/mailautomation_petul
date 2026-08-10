@@ -209,6 +209,82 @@ export function fehlendeVoraussetzungen(caps: HotelCapabilities | null): string[
 export const DATETIME_BEISPIEL = "2026-10-25T14:00:00+02:00";
 
 /**
+ * Übersetzt den technischen Zustand in eine Anweisung, die die Rezeptionistin ohne
+ * Systemkenntnis versteht. Sie steht im Dashboard über dem Entwurf.
+ *
+ * Der Zweck: Ein Entwurf ohne Systemwirkung sieht aus wie ein Entwurf mit Systemwirkung.
+ * Ohne diesen Hinweis müsste die Rezeptionistin bei jeder Mail raten, ob sie danach noch
+ * etwas von Hand im 3RPMS erledigen muss — und im Zweifel würde sie es vergessen.
+ */
+export interface ManuelleAufgabe {
+    /** true = das System hat nichts geändert, jemand muss ins PMS. */
+    noetig: boolean;
+    titel: string;
+    /** Warum es nicht automatisch ging — in Alltagssprache. */
+    grund: string;
+    /** "gesperrt" = freischaltbar, "unmoeglich" = geht grundsätzlich nicht, "keine" = nichts zu tun. */
+    art: "gesperrt" | "unmoeglich" | "keine";
+}
+
+export function beschreibeManuelleAufgabe(
+    apiAction: string | null | undefined,
+    mutation: string | null | undefined,
+    caps: HotelCapabilities | null,
+): ManuelleAufgabe {
+    const action = (apiAction || "none").trim();
+    const hatMutation = !!mutation && mutation !== "none";
+
+    // Der Agent hat selbst erkannt, dass es manuell laufen muss (api_action enthält
+    // dann "manuell"/"Empfang"/"vormerken" — s. NICHT_MOEGLICH).
+    const istManuell = /manuell|empfang|vormerken/i.test(action);
+    if (istManuell) {
+        const grenze = NICHT_MOEGLICH.find(g => g.apiAction === action);
+        return {
+            noetig: true,
+            titel: action,
+            grund: grenze?.grund
+                ?? "Diese Änderung lässt sich über die Schnittstelle nicht ausführen und muss direkt im 3RPMS erfolgen.",
+            art: "unmoeglich",
+        };
+    }
+
+    if (!hatMutation || action === "none") {
+        return { noetig: false, titel: "", grund: "", art: "keine" };
+    }
+
+    // Es ist eine Mutation geplant — ist sie für dieses Haus überhaupt freigeschaltet?
+    const name = mutation!.match(/mutation\s*(?:\w+\s*(?:\([^)]*\))?\s*)?\{\s*(\w+)\s*\(/)?.[1] ?? action;
+    if (caps) {
+        if (name === "importReservation" && !caps.reservierungsApi) {
+            return {
+                noetig: true,
+                titel: "Buchung manuell im 3RPMS anlegen",
+                grund: "Die Reservierungs-API ist für diesen Zugang noch nicht freigeschaltet. Bis 3RPMS sie aktiviert, können Buchungen nicht automatisch eingetragen werden.",
+                art: "gesperrt",
+            };
+        }
+        if (name === "createExternalSale" && !caps.salesProductId) {
+            return {
+                noetig: true,
+                titel: "Zusatzleistung manuell auf die Rechnung buchen",
+                grund: "Für die automatische Verbuchung fehlt noch ein Verkaufsprodukt in der Schnittstelle. Das ist einmalig einzurichten.",
+                art: "gesperrt",
+            };
+        }
+        if (name === "createDeposit" && !caps.paymentMethodId) {
+            return {
+                noetig: true,
+                titel: "Anzahlung manuell verbuchen",
+                grund: "Für die automatische Verbuchung fehlt noch eine Zahlungsart in der Schnittstelle. Das ist einmalig einzurichten.",
+                art: "gesperrt",
+            };
+        }
+    }
+
+    return { noetig: false, titel: "", grund: "", art: "keine" };
+}
+
+/**
  * Erzeugt den Regelteil für den Action-Agent-Prompt aus genau diesen Daten.
  * Dadurch kann der Prompt nicht mehr vom Schema abweichen — der Fehler, der das
  * ganze Problem verursacht hat.

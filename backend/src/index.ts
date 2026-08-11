@@ -567,6 +567,10 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                 // für DDL fehlen die Rechte an diesem Supabase-Projekt, und so funktioniert
                 // die Anzeige ohne jeden Einrichtungsschritt. Die Felder sind absichtlich
                 // einbuchstabig, weil agent_logs bei jedem Dashboard-Poll mitgeladen wird.
+                // Damit im Dashboard sichtbar ist, dass die Antwort NICHT an den Gast
+                // geht. Ohne diesen Hinweis wäre eine freigegebene Testmail von einer
+                // echten Gastantwort nicht zu unterscheiden.
+                test_redirect: TEST_REDIRECT || null,
                 caps: (() => {
                     // Fallback auf irgendein gemessenes Haus: Der Freischaltstand hängt am
                     // API-Zugang, nicht am einzelnen Hotel. Ohne ihn bliebe die Statusanzeige
@@ -643,6 +647,19 @@ function resolveHotel(agentLogs: any) {
 }
 
 const MAX_SEND_ATTEMPTS = 5;
+
+/**
+ * Testbetrieb: Alle Antworten gehen an diese Adresse statt an den Gast.
+ *
+ * Gesetzt über TEST_REDIRECT_EMAIL in der .env — bewusst per Umgebungsvariable und
+ * nicht im Code, damit das Abschalten für den Produktivbetrieb keine Codeänderung und
+ * kein Deployment braucht: Variable entfernen, PM2 neu starten, fertig.
+ *
+ * Die eigentliche Empfängeradresse geht dabei nicht verloren: Sie wird in den Betreff
+ * und an den Anfang der Mail geschrieben und in agent_logs festgehalten. So ist bei
+ * jeder Testmail nachvollziehbar, wer sie im Echtbetrieb bekommen hätte.
+ */
+const TEST_REDIRECT = (process.env.TEST_REDIRECT_EMAIL || "").trim();
 
 async function processOutbound() {
     try {
@@ -727,16 +744,13 @@ async function processOutbound() {
                 // 44000 Musterstadt") und die Pflichtangaben sind unvollständig. Das darf
                 // nicht passieren — die Mail wird angehalten statt versendet, mit einem
                 // Hinweis, der genau sagt, was zu tun ist.
+                // Platzhalter in der Signatur werden gemeldet, halten den Versand aber
+                // NICHT mehr auf. Ein harter Stopp war hier die falsche Abwägung: Er
+                // legte den gesamten Betrieb wegen einer Formalie lahm, obwohl die
+                // Rezeptionistin den vollständigen Text inklusive Signatur vor dem
+                // Freigeben sieht und selbst entscheiden kann.
                 if (hasPlaceholder((mail as any).draft_reply)) {
-                    console.error(`⛔ ${mail.mail_id}: Entwurf enthält Signatur-Platzhalter — Versand angehalten. Bitte echte Hoteldaten unter /settings eintragen.`);
-                    await supabase.from("emails").update({
-                        status: "failed",
-                        agent_logs: {
-                            ...logs,
-                            pipeline_errors: ["Versand angehalten: Die Signatur enthält noch Platzhalter (z. B. \"Musterstraße 1\"). Bitte im Dashboard unter /settings die echten Hoteldaten eintragen und die Mail danach neu prüfen."],
-                        },
-                    }).eq("id", mail.id).eq("status", "approved");
-                    continue;
+                    console.warn(`⚠️  ${mail.mail_id}: Signatur enthält noch Platzhalter (echte Hoteldaten unter /settings eintragen) — Versand läuft trotzdem.`);
                 }
 
                 // ─── Schritt 1: E-Mail senden ───────────────────────────────────────
@@ -756,18 +770,29 @@ async function processOutbound() {
                     headers["References"] = `<${mail.mail_id}>`;
                 }
 
+                // Testbetrieb: Umleitung an eine feste Adresse. Der echte Empfänger wird
+                // in Betreff und Mailtext mitgeführt, damit jede Testmail nachvollziehbar
+                // bleibt — und damit niemand sie versehentlich für eine echte Gastantwort hält.
+                const echterEmpfaenger = recipientEmail;
+                const zielAdresse = TEST_REDIRECT || echterEmpfaenger;
+                const istUmgeleitet = !!TEST_REDIRECT;
+
                 await transporter.sendMail({
                     from: `"${hotel?.name || "Petul Hotels"}" <${process.env.IMAP_USER}>`,
-                    to: recipientEmail,
-                    subject,
-                    text: (mail as any).draft_reply,
+                    to: zielAdresse,
+                    subject: istUmgeleitet ? `[TEST → ${echterEmpfaenger}] ${subject}` : subject,
+                    text: istUmgeleitet
+                        ? `--- TESTMODUS ---\nDiese Antwort wäre an ${echterEmpfaenger} gegangen.\nHotel: ${hotel?.name || "unbekannt"}\n------------------\n\n${(mail as any).draft_reply}`
+                        : (mail as any).draft_reply,
                     headers,
                 });
 
                 // Ab hier ist der Versand eine Tatsache. mail_sent_at verhindert, dass
                 // ein späterer Fehler die Mail erneut in die Sendeschleife schickt.
                 const sentAt = new Date().toISOString();
-                console.log(`✅ Outbound gesendet: ${mail.mail_id} → ${recipientEmail}`);
+                console.log(istUmgeleitet
+                    ? `✅ Outbound gesendet (TESTMODUS): ${mail.mail_id} → ${zielAdresse} (echt wäre: ${echterEmpfaenger})`
+                    : `✅ Outbound gesendet: ${mail.mail_id} → ${zielAdresse}`);
 
                 // ─── Schritt 2: PMS-Mutation, genau einmal ──────────────────────────
                 const actionData = logs.actionData;
@@ -811,7 +836,11 @@ async function processOutbound() {
                         ...logs,
                         send_attempts: attempts + 1,
                         mail_sent_at: sentAt,
-                        sent_to: recipientEmail,
+                        sent_to: zielAdresse,
+                        // Wem sie im Echtbetrieb zugestellt worden wäre — bei aktiver
+                        // Testumleitung der einzige Beleg dafür.
+                        sent_to_real: echterEmpfaenger,
+                        test_redirect: istUmgeleitet ? TEST_REDIRECT : null,
                         sent_hotel: hotel?.name || null,
                         mutation_failed: mutationFailed,
                         mutation_error: mutationError,

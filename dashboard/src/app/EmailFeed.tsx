@@ -36,16 +36,47 @@ type Email = {
     draft_reply?: string;
     has_attachments?: boolean;
     agent_logs?: any;
-    senders?: { email: string; name?: string }[];
+    // Supabase liefert bei senders!inner(...) ein OBJEKT, kein Array — die
+    // Beziehung ist many-to-one. Beide Formen zulassen, weil ältere Zeilen und
+    // andere Query-Pfade auch als Array ankommen können.
+    senders?: { email: string; name?: string } | { email: string; name?: string }[];
 };
 
 // Wohin die Antwort tatsächlich geht. Bei Portal-Mails (Booking.com, Airbnb) ist der
 // Absender noreply@… und nur Reply-To erreicht den Gast — der Unterschied war im
 // Dashboard bisher nirgends sichtbar, obwohl er darüber entscheidet, ob der Gast
 // die Antwort je zu sehen bekommt.
+/**
+ * Absenderdatensatz einer Mail — deckt beide Formen ab.
+ *
+ * Supabase liefert bei `senders!inner(...)` ein OBJEKT (Beziehung ist many-to-one),
+ * ältere Zeilen und andere Query-Pfade können ein Array liefern. Der direkte Zugriff
+ * über `senders[0]` ergab bei der Objektform immer undefined — deshalb blieben
+ * Absendername, Absenderadresse und die Zeile "Antwort geht an: …" dauerhaft leer.
+ */
+function getSender(email: Email | null | undefined): { email: string; name?: string } | null {
+    const s = email?.senders as any;
+    if (!s) return null;
+    return (Array.isArray(s) ? s[0] : s) ?? null;
+}
+
+function getSenderEmail(email: Email | null | undefined): string | null {
+    return getSender(email)?.email ?? null;
+}
+
+/**
+ * An welche Adresse die Antwort tatsächlich geht.
+ *
+ * Reply-To hat Vorrang: Bei Portal-Mails (Booking.com, Airbnb) ist der Absender
+ * noreply@… und nur Reply-To erreicht den Gast.
+ *
+ * Der Zugriff auf `senders` muss beide Formen abdecken — Supabase liefert bei
+ * `senders!inner(...)` ein Objekt, kein Array. Der frühere Zugriff über `[0]` ergab
+ * deshalb immer undefined, und die Zeile "Antwort geht an: …" blieb dauerhaft leer.
+ */
 function getReplyRecipient(email: Email | null | undefined): string | null {
     if (!email) return null;
-    return email.agent_logs?.reply_to || email.senders?.[0]?.email || null;
+    return email.agent_logs?.reply_to || getSenderEmail(email) || null;
 }
 
 type Capability = {
@@ -557,17 +588,17 @@ function MailExpandModal({ email, onClose }: { email: Email; onClose: () => void
                         </h2>
                     </div>
 
-                    {email.senders?.[0] && (
+                    {getSender(email) && (
                         <div className="flex items-center gap-3 mb-6 p-4 bg-[#F9F9F9] border border-black/5">
                             <div className="w-10 h-10 bg-[#6082B6] flex items-center justify-center shrink-0 text-white text-[14px] font-black">
-                                {(email.senders[0].name || email.senders[0].email).charAt(0).toUpperCase()}
+                                {(getSender(email)!.name || getSender(email)!.email).charAt(0).toUpperCase()}
                             </div>
                             <div className="min-w-0">
                                 <div className="text-[14px] font-bold truncate leading-tight">
-                                    {email.senders[0].name || email.senders[0].email}
+                                    {getSender(email)!.name || getSender(email)!.email}
                                 </div>
                                 <div className="text-[11px] text-black/30 truncate">
-                                    {email.senders[0].email}
+                                    {getSender(email)!.email}
                                 </div>
                             </div>
                         </div>
@@ -897,7 +928,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                     {email.betreff || "Kein Betreff"}
                                                 </div>
                                                 <div className="text-[9px] truncate mb-1 opacity-45">
-                                                    {email.senders?.[0]?.name || email.senders?.[0]?.email || "Unbekannter Absender"}
+                                                    {getSender(email)?.name || getSender(email)?.email || "Unbekannter Absender"}
                                                 </div>
                                                 <div className="flex items-center justify-between gap-1 mt-1">
                                                     <div className="text-[9px] font-bold uppercase tracking-widest opacity-30">
@@ -941,11 +972,11 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             <div className="text-[12px] font-bold truncate w-full text-center text-black/75 leading-snug">
                                                 {currentMail.betreff || "Kein Betreff"}
                                             </div>
-                                            {currentMail.senders?.[0] && (
+                                            {getSender(currentMail) && (
                                                 <div className="text-[9px] text-black/30 truncate">
-                                                    {currentMail.senders[0].name
-                                                        ? `${currentMail.senders[0].name} <${currentMail.senders[0].email}>`
-                                                        : currentMail.senders[0].email}
+                                                    {getSender(currentMail)!.name
+                                                        ? `${getSender(currentMail)!.name} <${getSender(currentMail)!.email}>`
+                                                        : getSender(currentMail)!.email}
                                                 </div>
                                             )}
                                         </button>
@@ -993,11 +1024,11 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                         {currentMail.betreff || "Kein Betreff"}
                                                     </h3>
                                                 </div>
-                                                {currentMail.senders?.[0] && (
+                                                {getSender(currentMail) && (
                                                     <div className="mb-3 text-[10px] text-black/40 break-words leading-snug">
-                                                        {currentMail.senders[0].name
-                                                            ? `${currentMail.senders[0].name} <${currentMail.senders[0].email}>`
-                                                            : currentMail.senders[0].email}
+                                                        {getSender(currentMail)!.name
+                                                            ? `${getSender(currentMail)!.name} <${getSender(currentMail)!.email}>`
+                                                            : getSender(currentMail)!.email}
                                                     </div>
                                                 )}
                                                 <div className="text-[12px] leading-relaxed text-black/60">
@@ -1153,6 +1184,23 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                 </motion.div>
                                             )}
 
+                                            {/* Testumleitung. Muss unübersehbar sein: Eine freigegebene Mail
+                                                wäre sonst von einer echten Gastantwort nicht zu unterscheiden,
+                                                und niemand würde bemerken, dass der Gast nie etwas bekommt. */}
+                                            {currentMail.status === "processing" && currentMail.agent_logs?.test_redirect && (
+                                                <div className="shrink-0 mx-8 mt-3 px-4 py-3 bg-[#E2001A] text-white">
+                                                    <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest">
+                                                        <AlertTriangle className="w-3 h-3" />
+                                                        Testmodus — der Gast bekommt diese Mail NICHT
+                                                    </div>
+                                                    <div className="mt-1 text-[11px] leading-relaxed opacity-90">
+                                                        Alle Antworten gehen derzeit an{" "}
+                                                        <span className="font-mono font-bold">{currentMail.agent_logs.test_redirect}</span>.
+                                                        Die eigentliche Empfängeradresse steht im Betreff der Testmail.
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {/* Was ist BEI DIESER MAIL möglich? Erscheint immer — auch wenn
                                                 nichts zu tun ist. Eine fehlende Anzeige wäre sonst nicht
                                                 unterscheidbar von "wurde nicht geprüft", und die
@@ -1210,6 +1258,14 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                             </span>
                                                         )}
                                                     </div>
+                                                    {!getReplyRecipient(currentMail) && (
+                                                        <div className="flex items-center gap-1.5 text-[9px] text-[#E2001A]">
+                                                            <AlertTriangle className="w-3 h-3" />
+                                                            <span className="font-black uppercase tracking-widest">
+                                                                Keine Empfängeradresse — Versand nicht möglich
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                     {currentMail.has_attachments && (
                                                         <div className="flex items-center gap-1.5 text-[9px] text-[#F39200]">
                                                             <AlertTriangle className="w-3 h-3" />

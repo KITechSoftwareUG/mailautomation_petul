@@ -38,13 +38,35 @@ export async function fetchEmails() {
  * Fehlt die Tabelle — die Migration ist optional —, wird still ein leeres Ergebnis
  * geliefert: Die entscheidende Information steht ohnehin pro Mail in agent_logs.
  */
+/**
+ * Freischaltstand der 3RPMS-Anbindung je Haus.
+ *
+ * Primärquelle ist `pms_capabilities` — das Backend misst den Stand beim Start und
+ * alle 6 Stunden. Sie ist der verlässlichere Weg, weil sie unabhängig davon existiert,
+ * ob gerade Mails verarbeitet wurden.
+ *
+ * Rückfall ist der kompakte Stand aus `agent_logs.caps` der jüngsten Mail. Er greift,
+ * solange das Backend nach einer Neuanlage der Tabelle noch nicht wieder gemessen hat,
+ * und hält die Anzeige damit über einen Neustart hinweg lückenlos.
+ */
 export async function fetchCapabilities() {
-    // Quelle ist der Freischaltstand, den das Backend bei jeder verarbeiteten Mail
-    // kompakt in agent_logs.caps ablegt. Bewusst so und nicht über eine eigene Tabelle:
-    // für DDL fehlen an diesem Supabase-Projekt die Rechte, und so braucht die Anzeige
-    // keinen Einrichtungsschritt. Es genügt die jüngste Mail — der Stand ist für alle
-    // fünf Häuser identisch und ändert sich nur, wenn 3RPMS etwas freischaltet.
     const { data, error } = await supabaseAdmin
+        .from("pms_capabilities")
+        .select("hotel_id, hotel_name, reservierungs_api, sales_product_id, payment_method_id, geprueft_am")
+        .order("hotel_id");
+
+    if (!error && data && data.length > 0) {
+        return data.map((r) => ({
+            hotelId: r.hotel_id as string,
+            hotelName: r.hotel_name as string,
+            reservierungsApi: !!r.reservierungs_api,
+            salesProduct: !!r.sales_product_id,
+            paymentMethod: !!r.payment_method_id,
+            geprueftAm: (r.geprueft_am as string) ?? null,
+        }));
+    }
+
+    const { data: mail } = await supabaseAdmin
         .from("emails")
         .select("agent_logs")
         .not("agent_logs->caps", "is", null)
@@ -52,17 +74,17 @@ export async function fetchCapabilities() {
         .limit(1)
         .maybeSingle();
 
-    if (error || !data) return null;
+    const c = (mail?.agent_logs as any)?.caps;
+    if (!c) return [];
 
-    const c = (data.agent_logs as any)?.caps;
-    if (!c) return null;
-
-    return {
+    return [{
+        hotelId: "",
+        hotelName: "Alle Häuser",
         reservierungsApi: !!c.r,
         salesProduct: !!c.s,
         paymentMethod: !!c.p,
         geprueftAm: c.t ?? null,
-    };
+    }];
 }
 
 export async function fetchEmailBody(emailId: string) {

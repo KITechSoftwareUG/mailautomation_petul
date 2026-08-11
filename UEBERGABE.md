@@ -179,5 +179,8 @@ die Prüfung vor jeder Ausführung — beide können nicht auseinanderlaufen. Ä
 
 ## Einrichtung
 
-Es ist **nichts einzurichten**. Die Statusanzeige „Hotelsystem" in der linken Leiste und der
-Schloss-Hinweis über den Entwürfen funktionieren ab sofort.
+Es ist **nichts mehr einzurichten** — die Statusanzeige „Hotelsystem" in der linken Leiste und
+der Schloss-Hinweis über den Entwürfen sind aktiv.
+
+Der Freischaltstand wird beim Programmstart und danach alle 6 Stunden neu gemessen. Sobald
+3RPMS etwas freischaltet, erscheint es dort automatisch — ohne Codeänderung.

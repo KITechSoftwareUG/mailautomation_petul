@@ -1153,27 +1153,33 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                                 </motion.div>
                                             )}
 
-                                            {/* Muss die Rezeptionistin nach dem Senden noch etwas von Hand tun?
-                                                Ein Entwurf ohne Systemwirkung sieht genauso aus wie einer mit —
-                                                ohne diesen Hinweis müsste sie bei jeder Mail raten. */}
-                                            {currentMail.status === "processing" && currentMail.agent_logs?.manual_task?.noetig && (
-                                                <div className="shrink-0 mx-8 mt-3 border-l-4 border-[#F39200] bg-[#F39200]/10">
-                                                    <div className="px-4 py-3">
-                                                        <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-[#F39200]">
-                                                            <Lock className="w-3 h-3" />
-                                                            {currentMail.agent_logs.manual_task.art === "gesperrt"
-                                                                ? "Noch nicht freigeschaltet — bitte manuell erledigen"
-                                                                : "Nicht automatisch möglich — bitte manuell erledigen"}
+                                            {/* Was ist BEI DIESER MAIL möglich? Erscheint immer — auch wenn
+                                                nichts zu tun ist. Eine fehlende Anzeige wäre sonst nicht
+                                                unterscheidbar von "wurde nicht geprüft", und die
+                                                Rezeptionistin müsste bei jeder Mail raten, ob sie danach
+                                                noch ins 3RPMS muss. */}
+                                            {currentMail.status === "processing" && currentMail.agent_logs?.machbarkeit && (() => {
+                                                const m = currentMail.agent_logs.machbarkeit;
+                                                const stil = {
+                                                    automatisch:   { farbe: "#009697", Icon: CheckCircle2, label: "Läuft automatisch" },
+                                                    gesperrt:      { farbe: "#F39200", Icon: Lock,         label: "Noch nicht freigeschaltet — bitte selbst eintragen" },
+                                                    unmoeglich:    { farbe: "#E2001A", Icon: XCircle,      label: "Nicht automatisch möglich — bitte selbst eintragen" },
+                                                    nichts_noetig: { farbe: "#6082B6", Icon: CheckCircle2, label: "Nichts einzutragen" },
+                                                }[m.status as "automatisch" | "gesperrt" | "unmoeglich" | "nichts_noetig"]
+                                                    ?? { farbe: "#6082B6", Icon: CheckCircle2, label: "Hinweis" };
+                                                const { farbe, Icon, label } = stil;
+                                                return (
+                                                    <div className="shrink-0 mx-8 mt-3 border-l-4 px-4 py-3"
+                                                         style={{ borderColor: farbe, background: farbe + "12" }}>
+                                                        <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest" style={{ color: farbe }}>
+                                                            <Icon className="w-3 h-3" />
+                                                            {label}
                                                         </div>
-                                                        <div className="mt-1.5 text-[13px] font-bold text-black/75">
-                                                            {currentMail.agent_logs.manual_task.titel}
-                                                        </div>
-                                                        <div className="mt-1 text-[11px] leading-relaxed text-black/50">
-                                                            {currentMail.agent_logs.manual_task.grund}
-                                                        </div>
+                                                        <div className="mt-1.5 text-[13px] font-bold text-black/75">{m.wunsch}</div>
+                                                        <div className="mt-1 text-[11px] leading-relaxed text-black/50">{m.text}</div>
                                                     </div>
-                                                </div>
-                                            )}
+                                                );
+                                            })()}
 
                                             {/* Mehrere Buchungen auf dieselbe Adresse (typisch: Firmenbuchung,
                                                 bei der alle Zimmer auf buchung@firma.de laufen). Der Entwurf

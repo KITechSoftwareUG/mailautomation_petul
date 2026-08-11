@@ -15,6 +15,8 @@
  * `dailyRates`) und niemand sie je gegen das Schema gehalten hat.
  */
 
+import { validateMutation } from "./mutationGuard";
+
 export interface MutationSpec {
     /** Wofür der Empfang sie fachlich einsetzt. */
     zweck: string;
@@ -236,6 +238,136 @@ export interface ManuelleAufgabe {
     grund: string;
     /** "gesperrt" = freischaltbar, "unmoeglich" = geht grundsätzlich nicht, "keine" = nichts zu tun. */
     art: "gesperrt" | "unmoeglich" | "keine";
+}
+
+/**
+ * Bewertet für EINE konkrete Mail, was mit dem Wunsch dieses Gastes möglich ist.
+ *
+ * Wichtig: Grundlage ist die vom Intent Agent erkannte Kategorie, NICHT der Vorschlag
+ * des Action Agents. Der schlägt bei einem unmöglichen Wunsch oft gar keine Aktion vor
+ * ("none") — dann wäre für die Rezeptionistin nichts zu sehen, obwohl sie genau dann
+ * selbst tätig werden muss. Über die Kategorie ist die Aussage verlässlich, weil sie
+ * beschreibt, was der GAST will, und nicht, was das Modell für machbar hält.
+ *
+ * Liefert immer ein Ergebnis — auch "nichts zu tun". Eine ausbleibende Anzeige wäre
+ * nicht unterscheidbar von "wurde nicht geprüft".
+ */
+export type MachbarkeitStatus = "automatisch" | "gesperrt" | "unmoeglich" | "nichts_noetig";
+
+export interface Machbarkeit {
+    status: MachbarkeitStatus;
+    /** Was der Gast möchte — in einem Halbsatz. */
+    wunsch: string;
+    /** Was mit diesem Wunsch passiert bzw. was zu tun ist. */
+    text: string;
+}
+
+export function bewerteMachbarkeit(
+    kategorie: string | null | undefined,
+    apiAction: string | null | undefined,
+    mutation: string | null | undefined,
+    caps: HotelCapabilities | null,
+): Machbarkeit {
+    const kat = (kategorie || "").trim();
+
+    // Maßgeblich ist NICHT, ob das Modell eine Mutation geliefert hat, sondern ob sie
+    // tatsächlich ausgeführt werden wird. Geprüft wird deshalb mit derselben Funktion,
+    // die processOutbound vor der Ausführung verwendet.
+    //
+    // Ohne diese Kopplung entstand ein gefährlicher Widerspruch: Eine
+    // Lieferanten-Terminavisierung zeigte "läuft automatisch", während die Mutation in
+    // Wahrheit leer war und vom Guard abgelehnt wurde. Die Rezeptionistin hätte darauf
+    // vertraut, dass etwas passiert — und es wäre nichts passiert.
+    // ("null"/"none" als Text kommen vor, weil das Feld im Schema ein String ist.)
+    const roh = (mutation || "").trim();
+    const hatMutation = roh !== "" && roh !== "none" && roh !== "null" && validateMutation(roh).ok;
+
+    // 1. Wünsche, die die Schnittstelle grundsätzlich nicht abbildet.
+    if (kat === "Umbuchung") {
+        return {
+            status: "unmoeglich",
+            wunsch: "Gast möchte seine Buchung ändern (Zeitraum oder Zimmer)",
+            text: "Das Hotelsystem bietet dafür keine Schnittstelle an. Bitte die Änderung direkt im 3RPMS vornehmen — die Antwort an den Gast verspricht bewusst nichts Konkretes.",
+        };
+    }
+    if (kat === "Stornierung") {
+        return {
+            status: "unmoeglich",
+            wunsch: "Gast möchte stornieren",
+            text: "Stornierungen sind über die Schnittstelle nur für Buchungen möglich, die dieses Programm selbst angelegt hat. Bitte im 3RPMS stornieren.",
+        };
+    }
+
+    // 2. Wünsche, die an einer Freischaltung hängen.
+    if (kat === "Reservierungsanfrage") {
+        if (caps && !caps.reservierungsApi) {
+            return {
+                status: "gesperrt",
+                wunsch: "Gast möchte buchen",
+                text: "Die Buchung kann noch nicht automatisch eingetragen werden — die Reservierungs-API ist für diesen Zugang nicht freigeschaltet. Bitte im 3RPMS anlegen.",
+            };
+        }
+        return hatMutation
+            ? { status: "automatisch", wunsch: "Gast möchte buchen", text: "Die Buchung wird beim Senden automatisch im 3RPMS angelegt." }
+            : { status: "nichts_noetig", wunsch: "Anfrage zu einer Buchung", text: "Reine Auskunft — im 3RPMS ist nichts einzutragen." };
+    }
+
+    // 3. Konkret vorgeschlagene Aktion des Action Agents prüfen.
+    if (hatMutation) {
+        const name = mutation!.match(/mutation\s*(?:\w+\s*(?:\([^)]*\))?\s*)?\{\s*(\w+)\s*\(/)?.[1] ?? "";
+        if (name === "createExternalSale" && caps && !caps.salesProduct) {
+            return {
+                status: "gesperrt",
+                wunsch: "Zusatzleistung soll auf die Rechnung",
+                text: "Kann noch nicht automatisch verbucht werden — dafür fehlt ein Verkaufsprodukt in der Schnittstelle. Bitte im 3RPMS auf die Rechnung setzen.",
+            };
+        }
+        if (name === "createDeposit" && caps && !caps.paymentMethod) {
+            return {
+                status: "gesperrt",
+                wunsch: "Anzahlung soll verbucht werden",
+                text: "Kann noch nicht automatisch verbucht werden — dafür fehlt eine Zahlungsart in der Schnittstelle. Bitte im 3RPMS verbuchen.",
+            };
+        }
+        const bezeichnung: Record<string, string> = {
+            updateRoomStay: "Check-in-/Check-out-Zeit wird gesetzt",
+            createExternalSale: "Zusatzleistung wird auf die Rechnung gebucht",
+            createDeposit: "Anzahlung wird verbucht",
+            addRoomStayGuest: "Mitreisender wird hinzugefügt",
+            removeRoomStayGuest: "Mitreisender wird entfernt",
+            createClient: "Gast wird angelegt",
+            updateReservation: "Buchungsdaten werden aktualisiert",
+            importReservation: "Buchung wird angelegt",
+        };
+        return {
+            status: "automatisch",
+            wunsch: bezeichnung[name] ?? "Änderung im Hotelsystem",
+            text: "Wird beim Senden automatisch im 3RPMS ausgeführt. Sie müssen nichts nachtragen.",
+        };
+    }
+
+    // 4. Der Action Agent hat selbst auf Handarbeit verwiesen.
+    if (/manuell|empfang|vormerken/i.test(apiAction || "")) {
+        const grenze = NICHT_MOEGLICH.find(g => g.apiAction === apiAction);
+        return {
+            status: "unmoeglich",
+            wunsch: apiAction!,
+            text: grenze?.grund ?? "Diese Änderung lässt sich über die Schnittstelle nicht ausführen und muss direkt im 3RPMS erfolgen.",
+        };
+    }
+
+    // 5. Alles Übrige: reine Auskunft.
+    const auskunft: Record<string, string> = {
+        "Allgemeine Frage": "Frage des Gastes",
+        "Beschwerde": "Beschwerde",
+        "Rechnungsfrage": "Frage zur Rechnung",
+        "Sonstiges": "Sonstiges Anliegen",
+    };
+    return {
+        status: "nichts_noetig",
+        wunsch: auskunft[kat] ?? "Anliegen des Gastes",
+        text: "Reine Auskunft — im 3RPMS ist nichts einzutragen.",
+    };
 }
 
 export function beschreibeManuelleAufgabe(

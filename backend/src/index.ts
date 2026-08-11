@@ -31,7 +31,7 @@ import {
 } from "./utils/threerpms";
 import { getSignature, hasPlaceholder } from "./utils/signatures";
 import { validateMutation } from "./utils/mutationGuard";
-import { setCapabilities, getCapabilities, getAnyCapabilities, fehlendeVoraussetzungen, beschreibeManuelleAufgabe } from "./utils/pmsCapabilities";
+import { setCapabilities, getCapabilities, getAnyCapabilities, fehlendeVoraussetzungen, beschreibeManuelleAufgabe, bewerteMachbarkeit } from "./utils/pmsCapabilities";
 
 dotenv.config();
 
@@ -550,6 +550,17 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                     finalActionData.api_action,
                     finalActionData.graphql_mutation,
                     getCapabilities(hotel?.id),
+                ),
+                // Was mit dem Wunsch DIESES Gastes möglich ist. Grundlage ist die
+                // erkannte Kategorie, nicht der Vorschlag des Action Agents — bei einem
+                // unmöglichen Wunsch schlägt der oft gar keine Aktion vor, und dann
+                // stünde für die Rezeptionistin nichts da, obwohl gerade dann Handarbeit
+                // nötig ist. Wird immer gesetzt, auch bei "nichts zu tun".
+                machbarkeit: bewerteMachbarkeit(
+                    intentData.kategorie,
+                    finalActionData.api_action,
+                    finalActionData.graphql_mutation,
+                    getCapabilities(hotel?.id) ?? getAnyCapabilities(),
                 ),
                 // Kompakter Freischaltstand (3 Booleans, ~40 Byte) — daraus speist sich die
                 // Statusleiste im Dashboard. Bewusst hier und nicht in einer eigenen Tabelle:

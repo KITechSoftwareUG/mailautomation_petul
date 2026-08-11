@@ -28,7 +28,12 @@ export type GuardResult =
 // Prompt-Vorlagen enthielten Felder, die im Schema nie existierten.
 import { MUTATIONS } from "./pmsCapabilities";
 
-const ALLOWED = MUTATIONS;
+// Bewusst KEINE Modulkonstante (`const ALLOWED = MUTATIONS`): pmsCapabilities.ts
+// importiert seinerseits validateMutation aus dieser Datei. Bei diesem Zyklus wäre
+// MUTATIONS zur Modulladezeit je nach Ladereihenfolge noch undefined. Der Zugriff
+// erst im Funktionskörper ist dagegen immer sicher, weil beide Module dann fertig
+// geladen sind.
+const allowed = () => MUTATIONS;
 
 /**
  * Platzhalter, die das Modell aus den Prompt-Vorlagen übernimmt, statt echte Werte
@@ -48,11 +53,11 @@ export function validateMutation(raw: string | null | undefined): GuardResult {
     if (!nameMatch) return { ok: false, reason: "Mutationsname nicht erkennbar — Syntax unerwartet." };
 
     const name = nameMatch[1];
-    const spec = ALLOWED[name];
+    const spec = allowed()[name];
     if (!spec) {
         return {
             ok: false,
-            reason: `Mutation "${name}" ist nicht freigegeben. Erlaubt: ${Object.keys(ALLOWED).join(", ")}.`,
+            reason: `Mutation "${name}" ist nicht freigegeben. Erlaubt: ${Object.keys(allowed()).join(", ")}.`,
         };
     }
 

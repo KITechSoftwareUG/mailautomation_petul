@@ -176,6 +176,18 @@ export function getCapabilities(hotelId: string | null | undefined): HotelCapabi
     return hotelId ? capabilityCache[hotelId] ?? null : null;
 }
 
+/**
+ * Freischaltstand irgendeines gemessenen Hauses. Für die Statusanzeige im Dashboard
+ * gedacht: Die Freischaltungen hängen am API-Zugang der Integration, nicht am
+ * einzelnen Haus — gemessen am 10.08.2026 waren alle fünf identisch gesperrt.
+ * Nötig, weil bei Mails ohne erkanntes Hotel sonst gar kein Stand vorläge und die
+ * Anzeige leer bliebe, obwohl die Information vorhanden ist.
+ */
+export function getAnyCapabilities(): HotelCapabilities | null {
+    const werte = Object.values(capabilityCache);
+    return werte.length ? werte[0] : null;
+}
+
 /** Fachlich mögliche Aktionen, gefiltert nach dem real gemessenen Zustand. */
 export function moeglicheAktionen(caps: HotelCapabilities | null): string[] {
     const immer = [

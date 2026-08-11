@@ -177,13 +177,7 @@ die Prüfung vor jeder Ausführung — beide können nicht auseinanderlaufen. Ä
 
 ---
 
-## Einmalige Einrichtung nach der Übergabe
+## Einrichtung
 
-Damit die **Statusanzeige „Hotelsystem"** in der linken Leiste erscheint, muss einmalig eine
-Tabelle angelegt werden. Im Supabase-Dashboard (Projekt `uxqcpmnanjfyztyhsdsi`) unter
-**SQL Editor** den Inhalt von `backend/supabase_migration_capabilities.sql` einfügen und
-ausführen — das dauert wenige Sekunden.
-
-Ohne diesen Schritt läuft alles Übrige unverändert: Die Entwürfe entstehen, und der
-Schloss-Hinweis über dem Entwurf zeigt weiterhin an, was von Hand zu erledigen ist. Es fehlt
-lediglich die Gesamtübersicht in der Seitenleiste.
+Es ist **nichts einzurichten**. Die Statusanzeige „Hotelsystem" in der linken Leiste und der
+Schloss-Hinweis über den Entwürfen funktionieren ab sofort.

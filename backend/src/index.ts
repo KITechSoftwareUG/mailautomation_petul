@@ -31,7 +31,7 @@ import {
 } from "./utils/threerpms";
 import { getSignature, hasPlaceholder } from "./utils/signatures";
 import { validateMutation } from "./utils/mutationGuard";
-import { setCapabilities, getCapabilities, fehlendeVoraussetzungen, beschreibeManuelleAufgabe } from "./utils/pmsCapabilities";
+import { setCapabilities, getCapabilities, getAnyCapabilities, fehlendeVoraussetzungen, beschreibeManuelleAufgabe } from "./utils/pmsCapabilities";
 
 dotenv.config();
 
@@ -551,6 +551,18 @@ async function runAiPipeline(mailData: any, threadId: string | null) {
                     finalActionData.graphql_mutation,
                     getCapabilities(hotel?.id),
                 ),
+                // Kompakter Freischaltstand (3 Booleans, ~40 Byte) — daraus speist sich die
+                // Statusleiste im Dashboard. Bewusst hier und nicht in einer eigenen Tabelle:
+                // für DDL fehlen die Rechte an diesem Supabase-Projekt, und so funktioniert
+                // die Anzeige ohne jeden Einrichtungsschritt. Die Felder sind absichtlich
+                // einbuchstabig, weil agent_logs bei jedem Dashboard-Poll mitgeladen wird.
+                caps: (() => {
+                    // Fallback auf irgendein gemessenes Haus: Der Freischaltstand hängt am
+                    // API-Zugang, nicht am einzelnen Hotel. Ohne ihn bliebe die Statusanzeige
+                    // bei jeder Mail ohne erkanntes Hotel leer.
+                    const c = getCapabilities(hotel?.id) ?? getAnyCapabilities();
+                    return c ? { r: c.reservierungsApi, s: !!c.salesProductId, p: !!c.paymentMethodId, t: c.geprueftAm } : null;
+                })(),
                 queued_at: queuedAt,
             } as any,
         });

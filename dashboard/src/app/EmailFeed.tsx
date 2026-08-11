@@ -49,13 +49,10 @@ function getReplyRecipient(email: Email | null | undefined): string | null {
 }
 
 type Capability = {
-    hotel_id: string;
-    hotel_name: string;
-    reservierungs_api: boolean;
-    sales_product_id: string | null;
-    payment_method_id: string | null;
-    gesperrt: string[];
-    geprueft_am: string;
+    reservierungsApi: boolean;
+    salesProduct: boolean;
+    paymentMethod: boolean;
+    geprueftAm: string | null;
 };
 
 /**
@@ -64,7 +61,7 @@ type Capability = {
  * "createExternalSale" sagen der Nutzerin nichts — der Unterschied zwischen
  * "geht grundsätzlich nicht" und "ist nur noch nicht freigeschaltet" schon.
  */
-function CapabilityPanel({ caps, onClose }: { caps: Capability[]; onClose: () => void }) {
+function CapabilityPanel({ caps, onClose }: { caps: Capability; onClose: () => void }) {
     // Was unabhängig von jeder Freischaltung unmöglich ist. Steht so auch im Backend
     // (pmsCapabilities.ts, NICHT_MOEGLICH) — hier in Nutzersprache übersetzt.
     const grundsaetzlich = [
@@ -99,40 +96,36 @@ function CapabilityPanel({ caps, onClose }: { caps: Capability[]; onClose: () =>
 
                 <div className="px-7 py-6 space-y-7">
                     <section>
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-black/35 mb-3">Pro Haus</h3>
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-black/35 mb-3">
+                            Eintragen ins Hotelsystem
+                        </h3>
                         <div className="space-y-2">
-                            {caps.map(c => {
-                                const frei = (c.gesperrt?.length ?? 0) === 0;
-                                return (
-                                    <div key={c.hotel_id} className={`border-l-4 px-4 py-3 ${frei ? "border-[#009697] bg-[#009697]/5" : "border-[#F39200] bg-[#F39200]/5"}`}>
-                                        <div className="flex items-center gap-2">
-                                            {frei ? <Unlock className="w-3.5 h-3.5 text-[#009697]" /> : <Lock className="w-3.5 h-3.5 text-[#F39200]" />}
-                                            <span className="text-[12px] font-bold">{c.hotel_name}</span>
-                                        </div>
-                                        <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
-                                            {[
-                                                ["Buchungen anlegen", c.reservierungs_api],
-                                                ["Zusatzleistungen", !!c.sales_product_id],
-                                                ["Anzahlungen", !!c.payment_method_id],
-                                            ].map(([label, ok]) => (
-                                                <div key={label as string} className="flex items-center gap-1.5">
-                                                    {ok
-                                                        ? <CheckCircle2 className="w-3 h-3 text-[#009697] shrink-0" />
-                                                        : <Lock className="w-3 h-3 text-black/25 shrink-0" />}
-                                                    <span className={ok ? "text-black/70" : "text-black/35"}>{label as string}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                        {!frei && (
-                                            <div className="mt-2 text-[10px] text-black/45 leading-relaxed">
-                                                Noch nicht freigeschaltet — die Entwürfe entstehen trotzdem, die Eintragung
-                                                erledigt die Rezeption bis dahin von Hand.
-                                            </div>
-                                        )}
+                            {([
+                                ["Buchungen anlegen", caps.reservierungsApi,
+                                 "Die Reservierungs-API muss von 3RPMS für den Zugang freigeschaltet werden."],
+                                ["Zusatzleistungen verbuchen", caps.salesProduct,
+                                 "Ein Verkaufsprodukt muss einmalig in der Schnittstelle eingerichtet werden."],
+                                ["Anzahlungen verbuchen", caps.paymentMethod,
+                                 "Eine Zahlungsart muss einmalig in der Schnittstelle eingerichtet werden."],
+                            ] as [string, boolean, string][]).map(([label, ok, hinweis]) => (
+                                <div key={label} className={`border-l-4 px-4 py-3 ${ok ? "border-[#009697] bg-[#009697]/5" : "border-[#F39200] bg-[#F39200]/5"}`}>
+                                    <div className="flex items-center gap-2">
+                                        {ok ? <Unlock className="w-3.5 h-3.5 text-[#009697]" /> : <Lock className="w-3.5 h-3.5 text-[#F39200]" />}
+                                        <span className="text-[12px] font-bold">{label}</span>
+                                        <span className={`ml-auto text-[9px] font-black uppercase tracking-widest ${ok ? "text-[#009697]" : "text-[#F39200]"}`}>
+                                            {ok ? "automatisch" : "noch nicht freigeschaltet"}
+                                        </span>
                                     </div>
-                                );
-                            })}
+                                    {!ok && (
+                                        <div className="mt-1.5 text-[10px] text-black/45 leading-relaxed">
+                                            {hinweis} Bis dahin entstehen die Entwürfe trotzdem — die Eintragung
+                                            erledigt die Rezeption von Hand, der Hinweis dazu steht über dem Entwurf.
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
                         </div>
+                        <p className="mt-2 text-[9px] text-black/30">Gilt für alle fünf Häuser gemeinsam.</p>
                     </section>
 
                     <section>
@@ -172,9 +165,9 @@ function CapabilityPanel({ caps, onClose }: { caps: Capability[]; onClose: () =>
                         </p>
                     </section>
 
-                    {caps[0]?.geprueft_am && (
+                    {caps.geprueftAm && (
                         <p className="text-[9px] text-black/25 pt-2 border-t border-black/5">
-                            Zuletzt geprüft: {new Date(caps[0].geprueft_am).toLocaleString("de-DE")} · Der Stand wird bei
+                            Zuletzt geprüft: {new Date(caps.geprueftAm).toLocaleString("de-DE")} · Der Stand wird bei
                             jedem Programmstart und alle 6 Stunden neu ermittelt.
                         </p>
                     )}
@@ -551,7 +544,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     );
     const [actionStatus, setActionStatus] = useState<"idle" | "approving" | "rejecting" | "regenerating">("idle");
     const [actionError, setActionError] = useState<string | null>(null);
-    const [capabilities, setCapabilities] = useState<Capability[]>([]);
+    const [capabilities, setCapabilities] = useState<Capability | null>(null);
     const [showCapabilities, setShowCapabilities] = useState(false);
     const [isMinimized, setIsMinimized] = useState(false);
     const [isMailExpanded, setIsMailExpanded] = useState(false);
@@ -600,7 +593,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
     // Laden reicht. Bewusst NICHT im Polling-Takt: die Anzeige wäre identisch, der
     // Egress aber dauerhaft höher.
     useEffect(() => {
-        fetchCapabilities().then(d => setCapabilities((d ?? []) as Capability[]));
+        fetchCapabilities().then(d => setCapabilities(d as Capability | null));
     }, []);
 
     useEffect(() => {
@@ -786,8 +779,9 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                 {/* Dauerhaft sichtbarer Zustand der Hotelsystem-Anbindung. Läuft mit,
                                     damit nie der Eindruck entsteht, das Programm sei defekt, wenn in
                                     Wahrheit eine Funktion in 3RPMS noch nicht freigeschaltet ist. */}
-                                {capabilities.length > 0 && (() => {
-                                    const gesperrt = capabilities.filter(c => (c.gesperrt?.length ?? 0) > 0).length;
+                                {capabilities && (() => {
+                                    const gesperrt = [capabilities.reservierungsApi, capabilities.salesProduct, capabilities.paymentMethod]
+                                        .filter(x => !x).length;
                                     const alleFrei = gesperrt === 0;
                                     return (
                                         <button
@@ -801,7 +795,9 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
                                             <div className="min-w-0 flex-1">
                                                 <div className="text-[8px] font-black uppercase tracking-widest text-white/40">Hotelsystem</div>
                                                 <div className={`text-[10px] font-bold leading-tight ${alleFrei ? "text-[#009697]" : "text-[#F39200]"}`}>
-                                                    {alleFrei ? "Alle Aktionen automatisch" : `${gesperrt} von ${capabilities.length} Häusern eingeschränkt`}
+                                                    {alleFrei
+                                                        ? "Alle Aktionen automatisch"
+                                                        : `${gesperrt} ${gesperrt === 1 ? "Aktion" : "Aktionen"} noch nicht freigeschaltet`}
                                                 </div>
                                             </div>
                                             <ChevronRight className="w-3 h-3 shrink-0 text-white/25" />
@@ -1470,7 +1466,7 @@ export function EmailFeed({ emails: initialEmails }: { emails: Email[] }) {
             </AnimatePresence>
 
             <AnimatePresence>
-                {showCapabilities && capabilities.length > 0 && (
+                {showCapabilities && capabilities && (
                     <CapabilityPanel caps={capabilities} onClose={() => setShowCapabilities(false)} />
                 )}
             </AnimatePresence>

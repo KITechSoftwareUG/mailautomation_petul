@@ -39,13 +39,30 @@ export async function fetchEmails() {
  * geliefert: Die entscheidende Information steht ohnehin pro Mail in agent_logs.
  */
 export async function fetchCapabilities() {
+    // Quelle ist der Freischaltstand, den das Backend bei jeder verarbeiteten Mail
+    // kompakt in agent_logs.caps ablegt. Bewusst so und nicht über eine eigene Tabelle:
+    // für DDL fehlen an diesem Supabase-Projekt die Rechte, und so braucht die Anzeige
+    // keinen Einrichtungsschritt. Es genügt die jüngste Mail — der Stand ist für alle
+    // fünf Häuser identisch und ändert sich nur, wenn 3RPMS etwas freischaltet.
     const { data, error } = await supabaseAdmin
-        .from("pms_capabilities")
-        .select("hotel_id, hotel_name, reservierungs_api, sales_product_id, payment_method_id, gesperrt, geprueft_am")
-        .order("hotel_id");
+        .from("emails")
+        .select("agent_logs")
+        .not("agent_logs->caps", "is", null)
+        .order("received_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (error) return [];
-    return data ?? [];
+    if (error || !data) return null;
+
+    const c = (data.agent_logs as any)?.caps;
+    if (!c) return null;
+
+    return {
+        reservierungsApi: !!c.r,
+        salesProduct: !!c.s,
+        paymentMethod: !!c.p,
+        geprueftAm: c.t ?? null,
+    };
 }
 
 export async function fetchEmailBody(emailId: string) {

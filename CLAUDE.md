@@ -282,6 +282,30 @@ landet über `setCapabilities()` im Prompt des Action Agents. Steht im Log
    `amount` und `receiptNumber` unterschieden, nicht über eigene Produkte.
 3. **Zahlungsart** — einmalig `createPaymentMethod` aufrufen (eine pro Integration/Hotel).
 
+### Vom Hersteller bestätigt (Support-Antwort 12.08.2026)
+
+Die folgenden Punkte sind **keine Vermutung mehr**, sondern schriftlich von 3RPMS bestätigt:
+
+| Frage | Antwort des Herstellers |
+|---|---|
+| Reservierungs-API | Muss **je Haus einzeln** aktiviert werden. Angeboten wurde die Aktivierung für einen **Sandbox-Account** — dessen Hotel-ID muss noch geliefert werden. |
+| Umbuchung / Preisänderung | Nur über `importReservation`, dabei muss die **gesamte** Reservierung im aktuellen Stand gesendet werden. Und: „Integrationen können bei Verwendung der importReservations-Mutation **nur Buchungen ändern, die sie selbst erstellt haben**." |
+| Stornierung | Nur über `importReservation`. Bei einem Storno werden **alle anderen übermittelten Informationen ignoriert** — kein Risiko, die RoomStays zu zerstören. |
+| Später Check-out | `check_in`/`check_out` sind die **physische** An-/Abreise. Empfehlung: Wunsch im **Notizfeld** vermerken. |
+| **`createExternalSale`** | ⚠️ **„Die ExternalSales API richtet sich an Registrierkassen, zB. in InHouse Shops oder -Gastronomie. Sie kann nicht zum Aufbuchen von regulären Leistungen verwendet werden."** |
+| Türzugang | Ablauf hängt vom **Schließsystem** ab — 3RPMS braucht die Angabe, welches im Einsatz ist. |
+| Rate Limit | **200 Anfragen/Minute pro IP**, bei Überschreitung **20 Minuten** Sperre. Keine Rate-Limit-Header. |
+| Webhooks | Verfügbar u. a.: `reservation.updated`, `room_stay.updated`, `category.availability.updated`, `category.restrictions.updated`, `category.default_prices.updated` |
+
+**Die folgenschwerste Auskunft ist die zu `createExternalSale`.** Zusatzleistungen wie Frühstück,
+Hund oder Parkplatz sind damit **dauerhaft nicht** automatisch verbuchbar — auch nicht nach einer
+Freischaltung. Ein Verkaufsprodukt anzulegen wäre zwecklos. Der Code führt das deshalb unter
+„grundsätzlich unmöglich", nicht unter „noch nicht freigeschaltet".
+
+**Konsequenz für den späten Check-out:** Der empfohlene Notizweg funktioniert nur über
+`ImportRoomStayInput.guestMessage`/`maidNotes` — also nur beim Anlegen einer eigenen Buchung.
+`UpdateRoomStayInput` hat kein Notizfeld. Bei fremden Buchungen bleibt auch das Handarbeit.
+
 ### ⛔ Technisch unmöglich — unabhängig von jeder Freischaltung
 
 | Gastwunsch | Warum |

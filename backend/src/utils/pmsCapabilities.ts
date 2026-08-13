@@ -52,13 +52,19 @@ export const MUTATIONS: Record<string, MutationSpec> = {
             "Kein Status, kein Datum, kein Zimmer — Storno und Umbuchung sind hierüber unmöglich.",
         ],
     },
+    // NICHT für Zusatzleistungen wie Frühstück, Hund oder Parkplatz verwenden.
+    // 3RPMS-Support am 12.08.2026 wörtlich: "Die ExternalSales API richtet sich an
+    // Registrierkassen, zB. in InHouse Shops oder -Gastronomie. Sie kann nicht zum
+    // Aufbuchen von regulären Leistungen verwendet werden."
+    // Bleibt in der Whitelist, damit ein bewusster Kassen-Anwendungsfall möglich bliebe —
+    // der Action Agent bekommt sie über buildCapabilityPrompt() aber nicht angeboten.
     createExternalSale: {
-        zweck: "Zusatzleistung auf die Rechnung buchen (Hund, Frühstück, Parkplatz).",
+        zweck: "Registrierkassen-Umsatz aus InHouse-Shop oder Gastronomie verbuchen. NICHT für reguläre Hotelleistungen.",
         required: ["productId", "roomStayId", "amount", "saleCreatedAt", "receiptNumber"],
         optional: ["receiptPdfUrl", "waiterName", "tableName"],
         constraints: [
+            "Nur für Registrierkassen-Umsätze (Shop/Gastronomie), nicht für Frühstück, Hund, Parkplatz o. Ä.",
             "Alle fünf Pflichtfelder müssen gesetzt sein.",
-            "productId muss ein real existierendes Produkt sein — pro Integration existiert nur EINES (Schema: 'Each integration can create only one external sales product'). Verschiedene Leistungen werden über amount und receiptNumber unterschieden, nicht über eigene Produkte.",
             "Die Reservierung darf nicht storniert sein.",
             "receiptNumber muss eindeutig sein — bei Wiederholung entsteht ein zweiter Beleg auf der Gastrechnung.",
         ],
@@ -141,8 +147,18 @@ export const NICHT_MOEGLICH: Grenze[] = [
     },
     {
         fall: "Stornierung einer Buchung, die nicht über diese Integration angelegt wurde",
-        grund: "ReservationStatus.CANCELLED existiert, ist aber nur über importReservation erreichbar und setzt die eigene externalId voraus.",
+        grund: "ReservationStatus.CANCELLED existiert, ist aber nur über importReservation erreichbar und setzt die eigene externalId voraus. Vom Hersteller am 12.08.2026 bestätigt: Integrationen können über importReservation ausschließlich Buchungen ändern, die sie selbst erstellt haben.",
         apiAction: "Manuelle Stornierung durch Empfang",
+    },
+    {
+        fall: "Zusatzleistung auf die Rechnung buchen (Frühstück, Hund, Parkplatz)",
+        grund: "Es gibt dafür keine Schnittstelle. createExternalSale ist laut Hersteller (12.08.2026) ausschließlich für Registrierkassen in InHouse-Shops und Gastronomie gedacht und ausdrücklich nicht zum Aufbuchen regulärer Leistungen. Über importReservation ginge es nur für selbst angelegte Buchungen und würde die gesamte Reservierung überschreiben.",
+        apiAction: "Zusatzleistung manuell buchen (Empfang)",
+    },
+    {
+        fall: "Späten Check-out für einen künftigen Aufenthalt vermerken",
+        grund: "check_out bezeichnet die tatsächliche Abreise und ist erst nach dem Check-in setzbar. Der Hersteller empfiehlt einen Vermerk im Notizfeld — die Notizfelder (guestMessage, maidNotes) existieren aber nur in ImportRoomStayInput, also nur beim Anlegen einer eigenen Buchung. Bei fremden Buchungen ist auch das nicht möglich.",
+        apiAction: "Late Check-out vormerken (Empfang)",
     },
 ];
 
@@ -200,7 +216,8 @@ export function moeglicheAktionen(caps: HotelCapabilities | null): string[] {
     ];
     if (!caps) return immer;
     const zusatz: string[] = [];
-    if (caps.salesProductId) zusatz.push("Zusatzleistung auf die Rechnung buchen (createExternalSale)");
+    // createExternalSale bewusst NICHT aufgeführt: laut Hersteller nur für
+    // Registrierkassen, nicht für reguläre Hotelleistungen (s. MUTATIONS-Kommentar).
     if (caps.paymentMethodId) zusatz.push("Anzahlung verbuchen (createDeposit)");
     if (caps.reservierungsApi) zusatz.push("Neue Buchung anlegen sowie eigene Buchungen ändern/stornieren (importReservation)");
     return [...immer, ...zusatz];
@@ -211,11 +228,14 @@ export function fehlendeVoraussetzungen(caps: HotelCapabilities | null): string[
     if (!caps) return ["Fähigkeiten für dieses Hotel noch nicht geprüft."];
     const out: string[] = [];
     if (!caps.reservierungsApi)
-        out.push("Reservierungs-API ist für diesen Zugang nicht freigeschaltet (ratePlans antwortet mit einem Konfigurationsfehler) — neue Buchungen, Umbuchungen und Stornos über die API sind dadurch unmöglich. Freischaltung muss 3RPMS vornehmen.");
-    if (!caps.salesProductId)
-        out.push("Kein External-Sales-Produkt vorhanden — createExternalSale ist nicht ausführbar. Einmalig per createExternalSalesProduct anlegen (pro Integration ist genau eines möglich).");
+        out.push("Reservierungs-API ist für diesen Zugang nicht freigeschaltet (ratePlans antwortet mit einem Konfigurationsfehler) — neue Buchungen, Umbuchungen und Stornos über die API sind dadurch unmöglich. Die Freischaltung muss 3RPMS je Haus vornehmen.");
     if (!caps.paymentMethodId)
         out.push("Keine Zahlungsart vorhanden — createDeposit ist nicht ausführbar. Einmalig per createPaymentMethod anlegen (eine pro Integration und Hotel).");
+    // salesProductId wird bewusst nicht mehr als "fehlende Voraussetzung" gemeldet:
+    // Ein Verkaufsprodukt anzulegen brächte nichts, weil createExternalSale laut
+    // Hersteller ohnehin nicht für reguläre Hotelleistungen verwendet werden darf.
+    // Es als behebbaren Mangel darzustellen, hätte eine Erwartung geweckt, die sich
+    // nie erfüllt.
     return out;
 }
 
@@ -315,11 +335,16 @@ export function bewerteMachbarkeit(
     // 3. Konkret vorgeschlagene Aktion des Action Agents prüfen.
     if (hatMutation) {
         const name = mutation!.match(/mutation\s*(?:\w+\s*(?:\([^)]*\))?\s*)?\{\s*(\w+)\s*\(/)?.[1] ?? "";
-        if (name === "createExternalSale" && caps && !caps.salesProduct) {
+        // Nicht "gesperrt", sondern dauerhaft unmöglich: Der Hersteller hat am 12.08.2026
+        // bestätigt, dass createExternalSale ausschließlich Registrierkassen bedient und
+        // nicht zum Aufbuchen regulärer Leistungen verwendet werden darf. Ein Verkaufsprodukt
+        // anzulegen würde daran nichts ändern — die Rezeptionistin darf hier also nicht auf
+        // eine spätere Freischaltung warten.
+        if (name === "createExternalSale") {
             return {
-                status: "gesperrt",
-                wunsch: "Zusatzleistung soll auf die Rechnung",
-                text: "Kann noch nicht automatisch verbucht werden — dafür fehlt ein Verkaufsprodukt in der Schnittstelle. Bitte im 3RPMS auf die Rechnung setzen.",
+                status: "unmoeglich",
+                wunsch: "Zusatzleistung soll auf die Rechnung (z. B. Frühstück, Hund, Parkplatz)",
+                text: "Dafür gibt es keine Schnittstelle — die Verkaufs-API des Hotelsystems ist ausschließlich für Registrierkassen gedacht. Bitte im 3RPMS auf die Rechnung setzen.",
             };
         }
         if (name === "createDeposit" && caps && !caps.paymentMethod) {

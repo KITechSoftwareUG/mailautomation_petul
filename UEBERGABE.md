@@ -54,7 +54,6 @@ trotzdem den Entwurf und sagt Ihnen im Dashboard, was Sie von Hand nachtragen m�
 | Was fehlt | Folge | Wer kann das lösen |
 |---|---|---|
 | **Reservierungs-API nicht aktiviert** | Keine neuen Buchungen über das Programm | **3RPMS** muss sie für Ihren Zugang freischalten |
-| **Kein Verkaufsprodukt angelegt** | Zusatzleistungen (Hund, Frühstück, Parkplatz) nicht automatisch verbuchbar | Einmalige Einrichtung, ca. 5 Minuten |
 | **Keine Zahlungsart angelegt** | Anzahlungen nicht automatisch verbuchbar | Einmalige Einrichtung, ca. 5 Minuten |
 
 > **Aktueller Stand (10.08.2026): Alle fünf Häuser sind in allen drei Punkten eingeschränkt.**
@@ -73,6 +72,7 @@ diese Funktionen schlicht nicht an. Wir haben das direkt an der Schnittstelle ü
 | **Preis einer einzelnen Buchung ändern** | Nur der Preis einer ganzen Kategorie wäre änderbar. Das würde alle Gäste betreffen und sofort an Booking.com & Co. gemeldet. |
 | **Späteren Check-out vorab eintragen** | Die Abreisezeit lässt sich erst eintragen, wenn der Gast eingecheckt hat. |
 | **Fremde Buchung stornieren** | Nur Buchungen, die dieses Programm selbst angelegt hat, lassen sich darüber stornieren. |
+| **Zusatzleistung auf die Rechnung buchen** (Frühstück, Hund, Parkplatz) | Vom Hersteller am 12.08.2026 bestätigt: Die Verkaufs-Schnittstelle ist ausschließlich für Registrierkassen in Shop und Gastronomie gedacht und darf für reguläre Hotelleistungen nicht verwendet werden. |
 
 **Wichtig:** In all diesen Fällen schreibt das System eine korrekte, freundliche Antwort —
 aber eine, die **nichts Falsches verspricht**. Statt „Ihre Buchung wurde umgebucht" steht dort
@@ -126,11 +126,10 @@ Ohne sie sind Buchungen, Umbuchungen und Stornierungen über die Schnittstelle d
 ausgeschlossen. Das ist der mit Abstand größte Hebel.
 
 **Priorität 2 — einmalige Einrichtung (wir übernehmen das):**
-- Ein Verkaufsprodukt für Zusatzleistungen anlegen. **Achtung:** Pro Zugang ist genau *ein*
-  Produkt möglich, der Name ist auf 20 Zeichen begrenzt und nicht mehr löschbar.
-  Vorschlag: `Zusatzleistung`. Unterschiedliche Leistungen werden über Betrag und Belegnummer
-  unterschieden.
 - Eine Zahlungsart für Anzahlungen anlegen. Vorschlag: `Onlinezahlung`.
+
+> Ein Verkaufsprodukt für Zusatzleistungen anzulegen, hat sich erledigt: Der Hersteller hat
+> bestätigt, dass diese Schnittstelle für reguläre Hotelleistungen nicht vorgesehen ist.
 
 **Priorität 3 — beim Mail-Anbieter:**
 - Weiterleitung so einstellen, dass die ursprüngliche Empfängeradresse erhalten bleibt.
